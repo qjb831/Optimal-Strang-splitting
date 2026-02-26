@@ -1,0 +1,832 @@
+source('Strang.R',keep.source = TRUE)
+library(plotly)
+library(tidyr)
+library(dplyr)
+library(MASS)
+library(expm)
+library(ggnewscale)
+library(patchwork)
+
+
+plot_2d_curve <- function(df,line_size  = 0.2,palette    = "viridis") {
+  if (!all(c("X1", "X2") %in% names(df))) {
+    stop("df must contain columns 'X1' and 'X2'")
+  }
+  
+  df$idx <- seq_len(nrow(df))
+  cols <- viridis::viridis(256, option = palette)
+
+  
+  ggplot(df, aes(x = X1, y = X2, color = idx)) +
+    geom_path(linewidth = line_size, lineend = "round") +
+    scale_color_gradientn(colors = cols, name = "index", guide = "colourbar") +
+    labs(x = "X", y = "Y") +
+    theme_minimal()
+}
+
+plot_FHN_phase_portrait <- function(par=c(0.1,0.5,1.5,1.4),
+                             x_range = c(-1.4, 1.4),
+                             y_range = c(-0.3, 1.2),
+                             n_points = 40,
+                             arrow_scale = 0.12,
+                             show_nullclines = TRUE,
+                             show_equilibria = TRUE) {
+  
+  epsilon   <- par[1]; alpha <- par[2]; gamma <- par[3]; beta  <- par[4]
+  f <- function(x,y) {  
+    (-x^3+x+alpha-y)/epsilon
+  }
+  g <- function(x,y) {    # y' = (2 - 0.4*x)*x + (0.3 + 0.1*x)
+    gamma*x+beta-y
+  }
+  # build grid
+  x <- seq(x_range[1], x_range[2], length.out = n_points)
+  y <- seq(y_range[1], y_range[2], length.out = n_points)
+  grid <- expand.grid(x = x, y = y, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+  
+  # evaluate f and g on the grid 
+  grid$xdot <- f(grid$x, grid$y)
+  grid$ydot <- g(grid$x, grid$y)
+  
+  # magnitude and normalization
+  grid$magnitude <- sqrt(grid$xdot^2 + grid$ydot^2)
+  grid$xdot_n <- grid$xdot / grid$magnitude
+  grid$ydot_n <- grid$ydot / grid$magnitude
+  
+  # compute arrow endpoints scaled to grid spacing
+  dx <- (x_range[2] - x_range[1]) / max(1, (n_points - 1))
+  dy <- (y_range[2] - y_range[1]) / max(1, (n_points - 1))
+  base_step <- min(dx, dy)
+  len <- arrow_scale * base_step
+  grid$xend <- grid$x + len * grid$xdot_n
+  grid$yend <- grid$y + len * grid$ydot_n
+  
+  # plot
+  p <- ggplot(grid, aes(x = x, y = y)) +
+    geom_raster(aes(fill = magnitude), interpolate = TRUE) +
+    geom_segment(aes(xend = xend, yend = yend),
+                 arrow = arrow(length = unit(0.08, "inches")), color = "black", alpha = 0.6) +
+    labs(x = "X", y = "Y", fill = "||F(X,Y)||") +
+    theme_minimal(base_size = 17)
+  
+  p <- p + scale_fill_viridis_c(option = "plasma",trans='log10')
+
+  return(p)
+}
+
+plot_estimates <- function(est_df, true_params, param_labels,
+                           subtitle = "", center_names = splitting_labels,
+                           title_text = NULL) {
+  # Create a data frame of true values repeated for each method
+  true_df <- tibble(param = param_labels, true_value = true_params)
+  true_df_expanded <- expand_grid(param = param_labels, center = center_names) %>%
+    left_join(true_df, by = "param") %>%
+    mutate(center = factor(center, levels = center_names))
+  
+  # Ensure est_df$center is factor with correct levels
+  est_df <- est_df %>% mutate(center = factor(center, levels = center_names))
+  
+  # Main boxplot
+  p <- ggplot(est_df, aes(x = center, y = estimate, fill = center)) +
+    geom_boxplot(outlier.size = 0.1, show.legend = FALSE) +
+    geom_point(data = true_df_expanded,
+               aes(x = center, y = true_value),
+               color = "gold", size = 1, inherit.aes = FALSE) +
+    facet_wrap(~ param, scales = "free_y", ncol = 3, labeller = label_parsed) +
+    labs(title = title_text,
+         subtitle = subtitle,
+         x = "Method", y = "Estimate") +
+    theme_bw(base_size = 13) +
+    theme(axis.text.x = element_text(angle = 25, hjust = 1))
+  
+  # Compute y-limits for each facet to include true value
+  y_limits <- est_df %>%
+    group_by(param) %>%
+    summarize(
+      min_y = min(estimate, na.rm = TRUE),
+      max_y = max(estimate, na.rm = TRUE),
+      true_y = unique(true_df_expanded$true_value[true_df_expanded$param == first(param)])
+    ) %>%
+    mutate(
+      lower = pmin(min_y, true_y),
+      upper = pmax(max_y, true_y)
+    )
+  
+  # Add invisible points to enforce y-scale
+  y_limits_long <- y_limits %>%
+    select(param, lower, upper) %>%
+    pivot_longer(cols = c(lower, upper), values_to = "y") %>%
+    select(param, y)
+  
+  p <- p + geom_blank(data = y_limits_long, aes(y = y), inherit.aes = FALSE)
+  
+  return(p)
+}
+
+plot_2d_curve_lorenz <- function(df,
+                                 axisnames = c('X', 'Y'),
+                                 line_size = 0.2,
+                                 palette = "viridis",
+                                 hide_legend=TRUE) {
+  if (!all(c("X1", "X2") %in% names(df))) {
+    names(df) <- c('X1', 'X2')
+  }
+  
+  df$idx <- seq_len(nrow(df))
+  cols <- viridis::viridis(256, option = palette)
+   
+  
+  p <- ggplot(df, aes(x = X1, y = X2, color = idx)) +
+    geom_path(linewidth = line_size, lineend = "round") +
+    scale_color_gradientn(colors = cols, name = "step") +
+    labs(
+      x = axisnames[1],
+      y = axisnames[2]
+    ) +
+    theme_bw(base_size = 17)
+      
+    if (hide_legend) p <- p + guides(color = "none") 
+  return(p)
+}
+
+# Kræver dataframe df med præcis 3 columns svarende til dimensioner
+plot_3d_curve <- function(df,colorscheme = 'Jet'){
+  fig <- plot_ly(
+    x = df[,1], y = df[,2], z = df[,3],
+    type = "scatter3d", mode = "lines+markers",
+    line = list(width = 4,
+                color = 1:nrow(df),       
+                colorscale = colorscheme),     
+    marker = list(size = 0.1,
+                  color = 1:nrow(df),
+                  colorscale = colorscheme,
+                  showscale = TRUE)   
+  )
+  fig
+}
+
+plot_lorenz_without_background <- function(df) {
+  
+  t <- seq_len(nrow(df))  # time index
+  
+  fig <- plot_ly(
+    x = df[,1],
+    y = df[,2],
+    z = df[,3],
+    type = "scatter3d",
+    mode = "lines",
+    line = list(
+      width = 4,
+      color = t,
+      colorscale = "Plasma",
+      showscale = FALSE
+    )
+  ) %>%
+    layout(
+      scene = list(
+        xaxis = list(visible = FALSE),
+        yaxis = list(visible = FALSE),
+        zaxis = list(visible = FALSE),
+        bgcolor = "white"
+      ),
+      paper_bgcolor = "white",
+      plot_bgcolor  = "white"
+    )
+  
+  fig
+}
+
+# Kræver df med d+1 columns X1,X2,...,Xd
+plot_variable_vs_time <- function(df,times, to_time = 50) {
+  df$times <- times
+  h <- times[2]-times[1]
+  steps <- to_time / h
+  
+  df <- df[1:steps,]
+  
+  df_long <- df %>%
+    pivot_longer(cols = starts_with("X"), 
+                 names_to = "variable", 
+                 values_to = "value")
+
+  ggplot(df_long, aes(x = times, y = value, color = variable)) +
+    geom_line() +
+    labs(x = "Time", y = "Value", title = "Each Xi vs Time")
+}
+
+plot_steps <- function(df_path, EM_steps, df_steps, b,
+                       title = "Linearization around fixpoint",
+                       add_nullclines = TRUE,
+                       xlim = c(-2, 2), n = 400, plane = c('X','Y')) {
+  
+  # Helper to ensure x,y columns exist
+  ensure_xy <- function(df) {
+    df <- as.data.frame(df)
+    if (all(c("x", "y") %in% names(df))) return(df)
+    if (all(c("X1", "X2") %in% names(df))) {
+      names(df)[names(df) == "X1"] <- "x"
+      names(df)[names(df) == "X2"] <- "y"
+      return(df)
+    }
+    names(df)[1:2] <- c("x", "y")
+    return(df)
+  }
+  
+  df_path  <- ensure_xy(df_path)
+  EM_steps <- ensure_xy(EM_steps)
+  df_steps <- as.data.frame(df_steps)
+  
+  if (!"label" %in% names(df_steps)) stop("df_steps must contain a 'label' column (e.g. 'S1','S2','S3').")
+  if (!all(c("x0_1","x0_2") %in% names(df_steps))) stop("df_steps must contain 'x0_1' and 'x0_2' columns.")
+  
+  # Prepare plot data
+  path_df  <- transform(df_path, which = "Path realization")
+  df_S3    <- transform(subset(df_steps, label == "S3"), which = "Distribution of Strang step")
+  EM_df    <- transform(EM_steps, which = "True distribution (EM simulated)")
+  init_pts <- unique(df_steps[, c("x0_1", "x0_2")])
+  names(init_pts) <- c("x", "y"); init_pts$which <- "Initial points"
+  
+  # ----- handle b (centers) : allow single point or multiple -----
+  # Accept: numeric length-2 c(x,y), data.frame/matrix with two columns, or named list/data.frame with x/y
+  make_centers_df <- function(b) {
+    if (is.null(b)) return(NULL)
+    if (is.numeric(b) && length(b) == 2) {
+      return(data.frame(x = b[1], y = b[2], which = "Center of linearization"))
+    }
+    bdf <- as.data.frame(b)
+    # If columns named x and y exist, use them; otherwise use first two columns
+    if (all(c("x","y") %in% names(bdf))) {
+      centers <- bdf[, c("x","y")]
+    } else if (all(c("X1","X2") %in% names(bdf))) {
+      centers <- bdf[, c("X1","X2")]
+      names(centers) <- c("x","y")
+    } else {
+      centers <- bdf[, 1:2]
+      names(centers) <- c("x","y")
+    }
+    centers$which <- "Center of linearization"
+    # drop NA rows (if any)
+    centers <- centers[!is.na(centers$x) & !is.na(centers$y), , drop = FALSE]
+    rownames(centers) <- NULL
+    return(centers)
+  }
+  
+  center_df <- make_centers_df(b)
+  
+  # color map
+  color_map <- c(
+    "Path realization" = "grey80",
+    "Distribution of Strang step" = "purple",
+    "True distribution (EM simulated)" = "gold",
+    "Initial points" = "black",
+    "Center of linearization" = "red",
+    "Nullclines" = "darkgrey"
+  )
+  
+  # base plot
+  p <- ggplot() +
+    geom_path(data = path_df, aes(x = x, y = y, color = which),
+              linewidth = 0.3, alpha = 0.7) +
+    geom_point(data = df_S3, aes(x = x, y = y, color = which), size = 0.1) +
+    geom_point(data = EM_df, aes(x = x, y = y, color = which), size = 0.1) +
+    geom_point(data = init_pts, aes(x = x, y = y, color = which), size = 1)
+  
+  # add centers if provided (can be multiple rows)
+  if (!is.null(center_df) && nrow(center_df) > 0) {
+    p <- p + geom_point(data = center_df, aes(x = x, y = y, color = which),
+                        size = 2.5, shape = 21, stroke = 0.6)
+  }
+  
+  # Add nullclines (separate dashed lines, same legend)
+  if (add_nullclines) {
+    # note: 'par' must exist in calling environment (keeps same behavior as original)
+    eps   <- par[1]; alpha <- par[2]; gamma <- par[3]; beta <- par[4]
+    xs <- seq(xlim[1], xlim[2], length.out = n)
+    df_xnull <- data.frame(x = xs, y = xs - xs^3 + alpha, which = "Nullclines")
+    df_ynull <- data.frame(x = xs, y = gamma * xs + beta, which = "Nullclines")
+    
+    p <- p +
+      geom_line(data = df_xnull, aes(x = x, y = y, color = which, linetype = which),
+                linewidth = 0.6, alpha = 0.8) +
+      geom_line(data = df_ynull, aes(x = x, y = y, color = which, linetype = which),
+                linewidth = 0.6, alpha = 0.8) +
+      scale_linetype_manual(values = c("Nullclines" = "dashed"))
+  }
+  
+  p <- p +
+    scale_color_manual(
+      name = "",
+      values = color_map,
+      breaks = c(
+        "Initial points",
+        "Center of linearization",
+        "Distribution of Strang step",
+        "True distribution (EM simulated)"
+      )
+    ) +
+    labs(x = plane[1], y = plane[2], title = title) +
+    theme_bw(base_size = 17) +
+    guides(
+      color = guide_legend(override.aes = list(size = 3)),
+      linetype = "none"
+    )
+  
+  return(p)
+}
+
+plot_multiple_steps <- function(df_path, EM_steps,
+                                df_steps_list, b_list,
+                                titles = NULL,
+                                ncol = NULL,  # number of columns in the layout; if NULL a sensible default is chosen
+                                xlim = NULL, ylim = NULL,
+                                legend_pos = "bottom",
+                                legend_text_size=20) {
+  
+  # validate inputs
+  if (!is.list(df_steps_list)) stop("df_steps_list must be a list of data.frames (one per linearization).")
+  n_plots <- length(df_steps_list)
+  
+  # Helper to normalize one b-element (can be numeric length2, data.frame/matrix with 2 cols, NULL)
+  normalize_b_element <- function(be) {
+    if (is.null(be)) return(NULL)
+    # numeric vector length 2 -> single center
+    if (is.numeric(be) && length(be) == 2) return(as.numeric(be)[1:2])
+    # data.frame or matrix -> return 2-col data.frame (rows = centers)
+    if (is.data.frame(be) || is.matrix(be)) {
+      bdf <- as.data.frame(be)
+      if (ncol(bdf) < 2) stop("b element data.frame/matrix must have at least two columns (x,y).")
+      bdf <- bdf[, 1:2, drop = FALSE]
+      names(bdf) <- c("x", "y")
+      # keep as data.frame (possibly multiple rows)
+      return(bdf)
+    }
+    # list: try to convert to data.frame or numeric
+    if (is.list(be)) {
+      # if it looks like c(x=..., y=...) or list of numeric pairs
+      # try to coerce to data.frame
+      try_df <- try(as.data.frame(be), silent = TRUE)
+      if (!inherits(try_df, "try-error") && ncol(try_df) >= 2) {
+        df2 <- try_df[, 1:2, drop = FALSE]
+        names(df2) <- c("x", "y")
+        return(df2)
+      }
+      # if it's numeric-ish vector inside list
+      if (length(unlist(be)) == 2 && all(sapply(unlist(be), is.numeric))) {
+        return(as.numeric(unlist(be))[1:2])
+      }
+    }
+    stop("Unsupported b_list element type. Each element must be NULL, numeric length-2, or a 2-column data.frame/matrix (rows = centers).")
+  }
+  
+  # If b_list provided as matrix/data.frame with nrow == n_plots, treat each row as a single center
+  if (is.matrix(b_list) || is.data.frame(b_list)) {
+    if (nrow(b_list) != n_plots) {
+      stop("When b_list is a matrix/data.frame it must have one row per df_steps_list element (nrow(b_list) == length(df_steps_list)).")
+    }
+    # convert rows to list of numeric pairs
+    b_list <- lapply(seq_len(nrow(as.data.frame(b_list))), function(i) {
+      row <- as.numeric(as.data.frame(b_list)[i, 1:2])
+      row
+    })
+  } else {
+    # if not a data.frame/matrix, coerce to list if needed
+    if (!is.list(b_list)) {
+      b_list <- as.list(b_list)
+    }
+    if (length(b_list) != n_plots) stop("Length of b_list must match length of df_steps_list.")
+  }
+  
+  # Normalize each element (can become numeric length2 or a data.frame of centers or NULL)
+  b_list_norm <- vector("list", n_plots)
+  for (i in seq_len(n_plots)) {
+    b_list_norm[[i]] <- normalize_b_element(b_list[[i]])
+  }
+  
+  if (is.null(titles)) {
+    titles <- paste("Linearization", seq_len(n_plots))
+  } else {
+    if (length(titles) != n_plots) stop("Length of titles must match number of items in df_steps_list.")
+  }
+  
+  # sensible default for ncol
+  if (is.null(ncol)) {
+    ncol <- if (n_plots == 1) 1 else if (n_plots == 2) 2 else ceiling(sqrt(n_plots))
+  }
+  
+  # build individual plots
+  plots <- vector("list", n_plots)
+  for (i in seq_len(n_plots)) {
+    # pass b_list_norm[[i]] directly to plot_steps(); plot_steps handles single or multiple centers
+    plots[[i]] <- plot_steps(df_path, EM_steps, df_steps_list[[i]], b_list_norm[[i]], title = titles[[i]])
+    # apply axis limits if provided
+    if (!is.null(xlim) || !is.null(ylim)) {
+      plots[[i]] <- plots[[i]] + coord_cartesian(xlim = xlim, ylim = ylim)
+    }
+  }
+  
+  # combine with patchwork, collect legends and set legend position
+  combined <- wrap_plots(plots, ncol = ncol) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = legend_pos,
+          legend.text  = element_text(size = legend_text_size))
+  
+  return(combined)
+}
+
+plot_multiple_steps_lorenz <- function(
+    df_path,
+    EM_steps,
+    df_steps_list,
+    b_list,
+    titles = NULL,
+    ncol = NULL,
+    xlim = NULL,
+    ylim = NULL,
+    legend_pos = "bottom",
+    plane = c("X", "Y")
+) {
+  
+  # -----------------------------
+  # Validation
+  # -----------------------------
+  if (!is.list(df_steps_list)) {
+    stop("df_steps_list must be a list of data.frames.")
+  }
+  
+  n_plots <- length(df_steps_list)
+  
+  if (length(b_list) != n_plots) {
+    stop("b_list must have the same length as df_steps_list.")
+  }
+  
+  if (is.null(titles)) {
+    titles <- paste("Linearization", seq_len(n_plots))
+  } else if (length(titles) != n_plots) {
+    stop("Length of titles must match df_steps_list.")
+  }
+  
+  if (is.null(ncol)) {
+    ncol <- if (n_plots <= 2) n_plots else ceiling(sqrt(n_plots))
+  }
+  
+  # -----------------------------
+  # Normalize b_list (same logic as plot_multiple_steps)
+  # -----------------------------
+  normalize_b <- function(b) {
+    if (is.null(b)) return(NULL)
+    
+    if (is.numeric(b) && length(b) == 2) {
+      return(b)
+    }
+    
+    if (is.matrix(b) || is.data.frame(b)) {
+      if (ncol(b) < 2) stop("b must have at least two columns.")
+      df <- as.data.frame(b)[, 1:2, drop = FALSE]
+      names(df) <- c("x", "y")
+      return(df)
+    }
+    
+    if (is.list(b)) {
+      try_df <- try(as.data.frame(b), silent = TRUE)
+      if (!inherits(try_df, "try-error") && ncol(try_df) >= 2) {
+        df <- try_df[, 1:2, drop = FALSE]
+        names(df) <- c("x", "y")
+        return(df)
+      }
+    }
+    
+    stop("Invalid b specification.")
+  }
+  
+  b_list_norm <- lapply(b_list, normalize_b)
+  
+  # -----------------------------
+  # Build plots
+  # -----------------------------
+  plots <- vector("list", n_plots)
+  
+  for (i in seq_len(n_plots)) {
+    
+    p <- plot_steps(
+      df_path  = df_path,
+      EM_steps = EM_steps,
+      df_steps = df_steps_list[[i]],
+      b        = b_list_norm[[i]],   # <- ALL centers at once
+      title    = titles[[i]],
+      add_nullclines = FALSE,
+      plane = plane
+    )
+    
+    if (!is.null(xlim) || !is.null(ylim)) {
+      p <- p + coord_cartesian(xlim = xlim, ylim = ylim)
+    }
+    
+    plots[[i]] <- p
+  }
+  
+  # -----------------------------
+  # Combine with patchwork
+  # -----------------------------
+  wrap_plots(plots, ncol = ncol) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = legend_pos)
+}
+
+
+plot_top_k_b_choices_lorenz <- function(paths, x0, b_results, par, h, k = 5,
+                                        xlim = c(-20, 20), ylim = c(-25, 25)) {
+  library(ggplot2)
+  
+  # Helper: ensure x,y column names
+  ensure_xy <- function(df) {
+    df <- as.data.frame(df)
+    if (all(c("x", "y") %in% names(df))) return(df)
+    if (all(c("X1", "X2") %in% names(df))) {
+      names(df)[names(df) == "X1"] <- "x"
+      names(df)[names(df) == "X2"] <- "y"
+      return(df)
+    }
+    names(df)[1:2] <- c("x", "y")
+    return(df)
+  }
+  
+  # Convert x0 into a data frame with proper column names
+  x0_df <- as.data.frame(t(x0))
+  names(x0_df) <- c("x", "y")
+  x0_df$which <- "Initial point"
+  
+  # Top k choices
+  top_k <- b_results[order(b_results$error), ][1:k, ]
+  
+  # Best (lowest-error) choice
+  best <- top_k[1, , drop = FALSE]
+  best$which <- "Best point"
+  
+  # Build the plot
+  p <- ggplot() +
+    geom_path(data = ensure_xy(paths[[1]]),
+              aes(x = x, y = y),
+              color = "grey80", linewidth = 0.3, alpha = 0.7) +
+    
+    # Top k points
+    geom_point(data = top_k,
+               aes(x = b1, y = b2, color = error),
+               size = 2) +
+    
+    # Highlight the best point
+    geom_point(data = best,
+               aes(x = b1, y = b2),
+               shape = 3, color = "green", size = 2, stroke = 1.2) +
+    
+    # Initial point
+    geom_point(data = x0_df,
+               aes(x = x, y = y, shape = which),
+               color = "black", size = 2) +
+    
+    scale_color_gradientn(colors = c("green", "yellow", "red"),
+                          name = "Prediction Error") +
+    scale_shape_manual(name = "", values = c("Initial point" = 19)) +
+    
+    labs(
+      title = paste0(
+        "Top ", k, " b choices for initial point x = (",
+        round(x0[1], 2), ", ", round(x0[2], 2), ") and h = ", h
+      ),
+      x = expression(b[1]),
+      y = expression(b[2])
+    ) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    theme_bw()
+  
+  return(p)
+}
+
+plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
+                                 xlim = c(-2, 2), ylim = c(-0.2, 2.1)) {
+  library(ggplot2)
+  
+  # Helper: ensure x,y column names
+  ensure_xy <- function(df) {
+    df <- as.data.frame(df)
+    if (all(c("x", "y") %in% names(df))) return(df)
+    if (all(c("X1", "X2") %in% names(df))) {
+      names(df)[names(df) == "X1"] <- "x"
+      names(df)[names(df) == "X2"] <- "y"
+      return(df)
+    }
+    names(df)[1:2] <- c("x", "y")
+    return(df)
+  }
+  
+  # Convert x0 into a data frame with proper column names
+  x0_df <- as.data.frame(t(x0))
+  names(x0_df) <- c("x", "y")
+  x0_df$which <- "Initial point"
+  
+  # Nullcline data
+  xs <- seq(xlim[1], xlim[2], length.out = 400)
+  df_xnull <- data.frame(x = xs, y = xs - xs^3 + par[2], which = "Nullclines")
+  df_ynull <- data.frame(x = xs, y = par[3] * xs + par[4], which = "Nullclines")
+  
+  # Polynomial overlay using x = x0[1]
+  x_val <- x0[1]
+  y_val <- x0[2]
+  df_poly <- data.frame(
+    b1 = xs,
+    poly_val1 = -x_val^3 + 3*xs^2*x_val - 3*xs^3 + 0.5 + xs 
+  )
+  
+  
+  # Top k choices
+  top_k <- b_results[order(b_results$error), ][1:k, ]
+  
+  # Build the plot
+  p <- ggplot() +
+    geom_path(data = ensure_xy(paths[[1]]),
+              aes(x = x, y = y),
+              color = "grey80", linewidth = 0.4) +
+    
+    # Nullclines
+    geom_line(data = df_xnull, aes(x = x, y = y, linetype = which),
+              color = "darkgrey") +
+    geom_line(data = df_ynull, aes(x = x, y = y, linetype = which),
+              color = "darkgrey") +
+    
+    # Polynomial overlay
+    
+    # Top k points
+    geom_point(data = top_k,
+               aes(x = b1, y = b2, color = error),
+               shape = 4, size = 4) +
+    geom_line(data = df_poly, aes(x = b1, y = poly_val1),
+              color = "purple", linewidth = 0.8) +
+    
+    # Initial point
+    geom_point(data = x0_df,
+               aes(x = x, y = y, shape = which),
+               color = "black", size = 2) +
+    
+    scale_color_gradientn(colors = c("yellow", "red"),
+                          name = "Prediction Error") +
+    scale_shape_manual(name = "", values = c("Initial point" = 19)) +
+    scale_linetype_manual(name = "", values = c("Nullclines" = "dashed")) +
+    
+    labs(x = 'x',
+      y = 'y'
+    ) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    theme_bw()
+  
+  return(p)
+}
+
+plot_top_k_b_choices_lorenz_XZ_plane <- function(path, x0, b_results, par, h, k = 5,
+                                        xlim = c(-20, 20), ylim = c(0, 40)) {
+  library(ggplot2)
+  
+  # Helper: ensure x,y column names
+  ensure_xy <- function(df) {
+    df <- as.data.frame(df)
+    if (all(c("x", "y") %in% names(df))) return(df)
+    if (all(c("X1", "X2") %in% names(df))) {
+      names(df)[names(df) == "X1"] <- "x"
+      names(df)[names(df) == "X2"] <- "y"
+      return(df)
+    }
+    names(df)[1:2] <- c("x", "y")
+    return(df)
+  }
+  
+  # Convert x0 into a data frame with proper column names
+  x0_df <- as.data.frame(t(x0))
+  names(x0_df) <- c("x", "y","z")
+  x0_df$which <- "Initial point"
+  
+  # Top k choices
+  top_k <- b_results[order(b_results$error), ][1:k, ]
+  
+  # Best (lowest-error) choice
+  best <- top_k[1, , drop = FALSE]
+  best$which <- "Best point"
+  
+  # Build the plot
+  p <- ggplot() +
+    geom_path(data = ensure_xy(path),
+              aes(x = x, y = y),
+              color = "grey80", linewidth = 0.3, alpha = 0.7) +
+    
+    # Top k points
+    geom_point(data = top_k,
+               aes(x = b1, y = b2, color = error),
+               size = 2,shape=4) +
+    
+    # Highlight the best point
+    geom_point(data = best,
+               aes(x = b1, y = b2),
+               shape = 3, color = "green", size = 2, stroke = 1.2) +
+    
+    # Initial point
+    geom_point(data = x0_df,
+               aes(x = x, y = z, shape = which),
+               color = "black", size = 2) +
+    
+    scale_color_gradientn(colors = c("green", "yellow", "red"),
+                          name = "Prediction Error") +
+    scale_shape_manual(name = "", values = c("Initial point" = 19)) +
+    
+    labs(
+      title = paste0(
+        "Top ", k, " b choices for initial point x = (",
+        round(x0[1], 2), ", ", round(x0[2], 2), ") and h = ", h
+      ),
+      x = expression(b[1]),
+      y = expression(b[2])
+    ) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    theme_bw()
+  
+  return(p)
+}
+plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
+                                 xlim = c(-2, 2), ylim = c(-0.2, 2.1)) {
+  library(ggplot2)
+  
+  # Helper: ensure x,y column names
+  ensure_xy <- function(df) {
+    df <- as.data.frame(df)
+    if (all(c("x", "y") %in% names(df))) return(df)
+    if (all(c("X1", "X2") %in% names(df))) {
+      names(df)[names(df) == "X1"] <- "x"
+      names(df)[names(df) == "X2"] <- "y"
+      return(df)
+    }
+    names(df)[1:2] <- c("x", "y")
+    return(df)
+  }
+  
+  # Convert x0 into a data frame with proper column names
+  x0_df <- as.data.frame(t(x0))
+  names(x0_df) <- c("x", "y")
+  x0_df$which <- "Initial point"
+  
+  # Nullcline data
+  xs <- seq(xlim[1], xlim[2], length.out = 400)
+  df_xnull <- data.frame(x = xs, y = xs - xs^3 + par[2], which = "Nullclines")
+  df_ynull <- data.frame(x = xs, y = par[3] * xs + par[4], which = "Nullclines")
+  
+  # Polynomial overlay using x = x0[1]
+  x_val <- x0[1]
+  df_poly <- data.frame(
+    b1 = xs,
+    poly_val1 = -x_val^3 + 3*xs^2*x_val - 3*xs^3 + 0.5 + xs,
+    poly_val2 = 1.5*xs+1.4
+  )
+  
+  
+  # Top k choices
+  top_k <- b_results[order(b_results$error), ][1:k, ]
+  
+  # Build the plot
+  p <- ggplot() +
+    geom_path(data = ensure_xy(paths[[1]]),
+              aes(x = x, y = y),
+              color = "grey80", linewidth = 0.4) +
+    
+    # Nullclines
+    geom_line(data = df_xnull, aes(x = x, y = y, linetype = which),
+              color = "darkgrey",
+              show.legend = FALSE) +
+    geom_line(data = df_ynull, aes(x = x, y = y, linetype = which),
+              color = "darkgrey",
+              show.legend = FALSE) +
+    
+    # Polynomial overlay
+    geom_line(data = df_poly, aes(x = b1, y = poly_val1),
+              color = "purple", linewidth = 0.6) +
+    
+    
+    # Top k points
+    geom_point(data = top_k,
+               aes(x = b1, y = b2, color = error),
+               shape = 4, size = 4) +
+    
+    # Initial point
+    geom_point(data = x0_df,
+               aes(x = x, y = y, shape = which),
+               color = "black", size = 2) +
+    
+    scale_color_gradientn(colors = c("yellow", "red"),
+                          name = "Prediction Error") +
+    scale_shape_manual(name = "", values = c("Initial point" = 19)) +
+    scale_linetype_manual(name = "", values = c("Nullclines" = "dashed")) +
+    
+    labs(
+      #title = paste0("Initial point x = (",round(x0[1], 2), ", ", round(x0[2], 2)),
+      x = 'x',
+      y = 'y'
+    ) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    theme_bw()
+  
+  return(p)
+}

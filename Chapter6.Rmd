@@ -1,0 +1,400 @@
+---
+title: "Chapter6"
+output: html_document
+date: "2026-02-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+source files 
+```{r}
+source('Brownian_motion.R',keep.source = TRUE) # functions for Brownian motion simulations
+source('EM.R',keep.source = TRUE) # functions for EM-simulation
+source('plots.R',keep.source = TRUE) # functions for plotting
+library(Rcpp)
+sourceCpp("fitzhugh_rcpp.cpp") # functions for Strang splitting and likelihood 
+```
+
+Configurations for FitzHugh-Nagumo simulation
+```{r}
+# Step configuration for EM simulation
+N <- 300000
+h <- 0.0001
+T <- N*h
+times <- seq(0,N*h,length.out=N+1)
+
+# Configuration for sub-sampled paths
+sub_h <- 0.06
+ratio <- sub_h / h
+sub_times <- seq(0,N*h,length.out=N/ratio+1)
+idx <- seq(1,N+1,by=ratio)
+
+# drift 
+F <- function(x,theta = c(0.05,0.5,1.5,1.4)){
+  # parameters
+  eps <- theta[1]; alpha <- theta[2]; gamma <- theta[3]; beta <- theta[4]
+  # variables
+  X <- x[1]; Y <- x[2]
+  c(
+    (X-X^3-Y+alpha)/eps,
+    gamma*X-Y+beta
+  )
+}
+
+# additive noise
+G <- function(x, Sigma = c(0.3,0.5)) Sigma
+```
+
+
+1000 FitzHugh-nagumo trajectories are stored in 'fitzhugh_paths.csv' to save computer time. Change sim_new_paths to TRUE to simulate new paths. 
+```{r}
+sim_new_paths <- FALSE
+
+if (sim_new_paths){
+  full_paths <- EM_sim_fast(F,G,x0=c(0,0),times,n_paths=1000,progress=TRUE)
+  paths <- lapply(full_paths, function(path) path[idx,])
+  
+  #write.csv(bind_rows(sub_paths, .id = "path_id"), "fitzhugh_paths.csv", row.names = FALSE)
+}else{
+  paths_df <- read.csv("fitzhugh_paths.csv")
+  paths <- paths_df %>%
+    split(.$path) %>%
+    lapply(select, -path)
+}
+```
+
+
+Plots for Figure 1
+```{r fig.height=8, fig.width=16}
+example_path <- EM_sim_fast(F,G,x0=c(0,0),times,n_paths=1,progress=FALSE)
+
+# Plot one path
+plot_2d_curve(example_path[[1]])
+
+# Plot phase portrait of FHN drift
+plot_FHN_phase_portrait(par=c(0.05,0.5,1.5,1.4))
+```
+
+Cloud plots
+```{r fig.height=8, fig.width=16}
+# initial points
+x1 <- c(0.5, 1)
+x2 <- c(1,0)
+x3 <- c(-1.25,1.2)
+x4 <- c(-0.65,0.15)
+x0_vals <- rbind(x1, x2, x3, x4)
+
+par <- c(0.1, 0.5, 1.5, 1.4, 0.3, 0.5)
+
+# time setup
+N <- 600
+h <- 0.0001
+strang_h <- N * h
+times <- seq(0, N * h, length.out = N + 1)
+
+
+# EM paths 
+EM_step1 <- EM_step(F, G, x1, times, progress = FALSE)
+EM_step2 <- EM_step(F, G, x2, times, progress = FALSE)
+EM_step3 <- EM_step(F, G, x3, times, progress = FALSE)
+EM_step4 <- EM_step(F, G, x4, times, progress = FALSE)
+
+EM_steps <- as.data.frame(rbind(EM_step1, EM_step2, EM_step3, EM_step4))
+
+if (!all(c("x","y") %in% names(EM_steps))) {
+  names(EM_steps)[1:2] <- c("x", "y")
+}
+
+
+
+
+df_steps_b1 <- one_step_pred_rcpp(x0= x0_vals,h= strang_h,par= par,n= 1000,method = "fix",order  = "fmuf")
+df_steps_b2 <- one_step_pred_rcpp(x0= x0_vals,h= strang_h,par= par,n= 1000,method = "custom", order  = "fmuf",center = c(-1,0.5))
+df_steps_b3 <- one_step_pred_rcpp(x0= x0_vals,h= strang_h,par= par,n= 1000,method = "custom", order  = "fmuf",center = c(0,0.5))
+df_steps_b4 <- one_step_pred_rcpp(x0= x0_vals,h= strang_h,par= par,n= 1000,method = "custom", order  = "fmuf",center = c(1,0.5))
+
+plot_multiple_steps(
+  df_path = example_path,
+  EM_steps = EM_steps,
+  df_steps_list = list(df_steps_b1,df_steps_b2,df_steps_b3,df_steps_b4),
+  b_list = list(fixed_point_rcpp(par = par),c(-1,0.5),c(0,0.5),c(1,0.5)), # red circle overlays
+  titles = c("Fixed point","(b1,b2)=(-1,0.5)","(b1,b2)=(0,0.5)","(b1,b2)=(1,0.5"),
+  ncol = 2,
+  xlim = c(-1.5,1.4), ylim = c(-0.4,1.6),
+  legend_pos = "bottom"
+)
+```
+
+```{r fig.height=8, fig.width=16}
+df_steps_b5 <- one_step_pred_rcpp(x0= x0_vals,h= strang_h,par= par,n= 1000,method = "piecewise",order  = "fmuf")
+
+
+plot_multiple_steps(
+  df_path = example_path,
+  EM_steps = EM_steps,
+  df_steps_list = list(df_steps_b5),
+  b_list = list(list(c(-1,0,1),c(0.5,0.5,0.5))),
+  titles = c("Piecewise linearization"),
+  ncol = 2,
+  xlim = c(-1.5,1.4), ylim = c(-0.4,1.6),
+  legend_pos = "bottom"
+)
+```
+
+
+Parameter estimation for 1000 FitzHugh-Nagumo reptitions 
+```{r fig.height=8, fig.width=16}
+# Corrected splitting methods
+splitting_methods <- c("buckwar","fix","piecewise","fast-slow")
+
+# Starting values for optimization
+start_params <- c(0.5, 0.1, 1, 1, 1, 1)
+
+# Method names, true parameters and parameter labels (for overlay in plots)
+splitting_labels <- c("Buckwar","Fixed point linearization","Piecewise linearization","Fast-slow method")
+true_params <- c(0.01, 0.5, 1.5, 1.4, 0.3, 0.5)
+param_labels <- c("epsilon","alpha","gamma","beta","sigma[1]","sigma[2]")
+
+fit_for_center <- function(method_name, show_progress = FALSE) {
+  n_paths <- length(paths)     
+  preds <- vector("list", n_paths)
+
+  for (i in seq_along(paths)) {
+    if (show_progress) message("  fitting path ", i, " / ", n_paths)
+    this_path <- paths[[i]]  
+
+    # minimize negative log-likelihood
+    obj <- function(par, path, times, method_name) {
+      theta_drift     <- par[1:4]
+      theta_diffusion <- par[5:6]
+
+      # Return big penalty if invalid
+      if (par[4] < 0.001 || par[5] < 0.001) return(1e20)
+      if (par[1] > 1 || par[1] < 1e-6) return(1e20)
+      
+      # Call Rcpp likelihood function from fitzhugh_rcpp.cpp
+      ll <- tryCatch(
+        log_lik_path_rcpp(as.matrix(path), times, theta_drift, theta_diffusion,
+                          method = method_name),
+        error = function(e) NA_real_
+      )
+      
+      if (!is.numeric(ll) || !is.finite(ll)) return(1e20)
+      return(ll)
+    }
+
+    # Run optimization
+    fit <- optim(par    = start_params,
+                 fn     = obj,
+                 path   = this_path,
+                 times  = sub_times, 
+                 method_name = method_name,
+                 method = "Nelder-Mead",
+                 control = list(maxit = 5000, trace = 0))
+
+    preds[[i]] <- fit$par
+  }
+
+  # Combine results into a data frame
+  preds_mat <- do.call(rbind, preds)
+  colnames(preds_mat) <- param_labels
+  out_df <- as.data.frame(preds_mat)
+  return(out_df)
+}
+# Loop through different splitting methods
+all_results_list <- vector("list", length(splitting_methods))
+for (i in seq_along(splitting_methods)) {
+  name <- splitting_labels[i]     
+  meth <- splitting_methods[i]     
+  message("Running fits for method: ", name)
+
+  res_df <- fit_for_center(method_name = meth, show_progress = TRUE)
+  res_df <- res_df %>%
+    mutate(run = seq_len(nrow(res_df)),
+           center = name)
+
+  all_results_list[[i]] <- res_df
+}
+
+
+```
+```{r fig.height=8, fig.width=16}
+# Format for plotting
+all_results <- bind_rows(all_results_list)
+est_df <- all_results %>%
+  pivot_longer(cols = all_of(param_labels),
+               names_to = "param",
+               values_to = "estimate") %>%
+  mutate(param = factor(param, levels = param_labels),
+         center = factor(center, levels = splitting_labels))
+
+# Plot estimates 
+plot_estimates(est_df, true_params, param_labels,
+               subtitle = "1000 Monte Carlo repetitions")
+```
+
+
+```{r fig.height=6, fig.width=8}
+# initial values (black dots)
+# x_mat <- rbind(
+#   c(-1.2, 1.2),
+#   c(-0.5,-0.1),
+#   c(1,0.1),
+#   c(0.5,1)
+# )
+x_mat <- rbind(
+  # # c(-1.3,1.397), # slow
+  # # c(-1.2,1.028),
+  # # c(-1.1,0.731),
+  # # c(-1,0.5),
+  # # c(-0.9,0.329),
+  # # c(-0.8,0.212),
+  # c(-1.5,1.397), # slow
+  # c(-1.4,1.028),
+  # c(-1.3,0.731),
+  # c(-1.2,0.5),
+  # c(-1.1,0.329),
+  # c(-1,0.212),
+  # c(-1.1,1.397), # slow
+  # c(-1,1.028),
+  # c(-0.9,0.731),
+  # c(-0.8,0.5),
+  # c(-0.7,0.329),
+  # c(-0.6,0.212),
+  # # c(1.2,-0.028),
+  # # c(1.1,0.269),
+  # # c(1,0.5),
+  # # c(0.9,0.671),
+  # # c(0.8,0.788),
+  # c(1.4,-0.028),
+  # c(1.3,0.269),
+  # c(1.2,0.5),
+  # c(1.1,0.671),
+  # c(1,0.788),
+  # c(1,-0.028),
+  # c(0.9,0.269),
+  # c(0.8,0.5),
+  # c(0.7,0.671),
+  # c(0.6,0.788),
+  c(-0.5,0), # fast
+  c(0,0),
+  c(0.5,0),
+  c(1,0),
+  c(-0.5,0.2), # fast
+  c(0,0.2),
+  c(0.5,0.2),
+  c(1,0.2),
+  c(-0.5,-0.2), # fast
+  c(0,-0.2),
+  c(0.5,-0.2),
+  c(1,-0.2),
+  c(0.5,1),
+  c(0,1),
+  c(-0.5,1),
+  c(-1,1),
+  c(0.5,1.2),
+  c(0,1.2),
+  c(-0.5,1.2),
+  c(-1,1.2),
+  c(0.5,0.8),
+  c(0,0.8),
+  c(-0.5,0.8),
+  c(-1,0.8)
+)
+# x_mat <- rbind(
+#   c(1.2,0.5)
+# )
+
+# b-grid 
+b1_seq <- seq(-1.3, 1.6, length.out = 85)
+b2_seq <- seq(-0.55, 2.15, length.out = 71)
+b_grid <- expand.grid(b1 = b1_seq, b2 = b2_seq)
+
+
+# model parameters
+step_size <- 0.06
+par <- c(0.05, 0.5, 1.5, 1.4, 0.3, 0.5)
+
+# function to copmute prediction error for a single b in single initial value
+strang_pred_error <- function(x, b, strang_h, par, EM_steps) {
+  # Ensure proper types
+  x_mat <- matrix(as.numeric(x), nrow = 1)  
+  b_vec <- as.numeric(b)
+
+  # Call one step predictions from rcpp
+  strang_df <- one_step_pred_rcpp(
+    x_mat,
+    strang_h,
+    par,
+    n = 1000,
+    method = 'test',
+    order = "fmuf",
+    center = b_vec
+  )
+  strang_steps <- as.matrix(strang_df[, c("x", "y"), drop = FALSE])
+  EM_steps <- as.matrix(EM_steps)
+
+  # error between means
+  err_vec <- colMeans(EM_steps) - colMeans(strang_steps)
+  sqrt(sum(err_vec^2))
+}
+
+
+# Loop over initial points and b-grid 
+process_b_grid <- function(x_values, b_grid,strang_h, par, paths, k = 1500,xlim = c(-1.4, 1.4), ylim = c(-0.6, 2.2),save=TRUE){
+  xmat <- as.matrix(x_values)
+  ngr <- nrow(xmat)
+  out <- vector("list", ngr)
+  for (i in seq_len(ngr)) {
+
+    x <- as.numeric(xmat[i, ])
+    times <- seq(0, strang_h, length.out = strang_h / 0.0001 + 1)
+
+    F <- function(x){
+      # parameters
+      eps <- par[1]; alpha <- par[2]; gamma <- par[3]; beta <- par[4]
+      # variables
+      X <- x[1]; Y <- x[2]
+      c(
+        (X-X^3-Y+alpha)/eps,
+        gamma*X-Y+beta
+      )
+    }
+    G <- function(x) c(par[5],par[6])
+    # Run EM step to generate "true" trajectory
+    EM_steps <- EM_step_fast(F, G, matrix(x, nrow = 1), times)
+
+    # Compute errors for every b in the grid
+    errors <- apply(b_grid, 1, function(b) {
+      strang_pred_error(x, b, strang_h, par, EM_steps)
+    })
+
+    b_df <- as.data.frame(b_grid)
+    b_df$error <- errors
+    
+    p <- plot_top_k_b_choices(paths, x, b_df, par, strang_h,k = k, xlim = xlim, ylim = ylim)
+    
+    if (save){
+      dir.create("best_FHN_splittings-TEST", showWarnings = FALSE)  
+      png_file  <- file.path("best_FHN_splittings-TEST", sprintf("%s_topk.png", i))
+      ggsave(filename = png_file, plot = p, width = 8, height = 6)
+    }
+    
+    print(p)
+    
+  }
+}
+
+process_b_grid(
+  x_mat,
+  b_grid,
+  step_size,
+  par,
+  example_path,
+  save=TRUE
+)
+
+```
+

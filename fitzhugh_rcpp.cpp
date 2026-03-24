@@ -12,6 +12,148 @@ inline double cube_root(double x) {
   return (x > 0.0 ? 1.0 : -1.0) * std::pow(std::abs(x), 1.0/3.0);
 }
 
+// e.g. coeffs = {a3, a2, a1, a0} for a3*x^3 + a2*x^2 + a1*x + a0 = 0
+// [[Rcpp::export]]
+static arma::cx_vec poly_roots_arma(const std::vector<double>& coeffs, double tol = 1e-14) {
+  size_t n = coeffs.size();
+  // remove leading zeros (degenerate polynomial)
+  size_t first = 0;
+  while (first < n && std::abs(coeffs[first]) <= tol) ++first;
+  if (first >= n) {
+    // zero polynomial -> no roots; return empty vector
+    return arma::cx_vec();
+  }
+  
+  size_t deg = n - first - 1; // degree = number of coefficients - 1
+  // remaining coefficients
+  std::vector<double> c;
+  for (size_t i = first; i < n; ++i) c.push_back(coeffs[i]);
+  // degree:
+  deg = c.size() - 1;
+  
+  if (deg == 0) {
+    // constant: no roots
+    return arma::cx_vec();
+  } else if (deg == 1) {
+    // linear: a1*x + a0 = 0 -> x = -a0/a1
+    arma::cx_vec out(1);
+    out(0) = std::complex<double>(-c[1] / c[0], 0.0);
+    return out;
+  } else {
+    // create companion matrix for monic polynomial
+    // first make monic by dividing by leading coeff
+    double lead = c[0];
+    arma::cx_mat C(deg, deg, arma::fill::zeros);
+    // coefficients for monic: x^deg + a_{deg-1} x^{deg-1} + ... + a0
+    std::vector<double> mono(deg + 1);
+    for (size_t i = 0; i <= deg; ++i) mono[i] = c[i] / lead;
+    
+    // first row: -a_{deg-1}, -a_{deg-2}, ..., -a0
+    for (size_t j = 0; j < deg; ++j) {
+      C(0, j) = -mono[1 + j];
+    }
+    // subdiagonal ones
+    for (size_t i = 1; i < deg; ++i) {
+      C(i, i - 1) = 1.0;
+    }
+    
+    arma::cx_vec eigvals;
+    bool ok = arma::eig_gen(eigvals, C);
+    // If eig_gen fails (rare), return empty vector
+    if (!ok) return arma::cx_vec();
+    return eigvals;
+  }
+}
+
+// [[Rcpp::export]]
+List find_b_intersections_arma(NumericVector x0, NumericVector par, double imag_tol = 1e-8) {
+  if (x0.size() < 2 || par.size() < 4) stop("x0 must have 2 elements and par at least 4 elements.");
+  
+  double x_val = x0[0];
+  double y_val = x0[1];
+  double eps   = par[0]; // unused here but kept for compatibility
+  double alpha = par[1];
+  double gamma = par[2];
+  double beta  = par[3];
+  
+  std::vector<double> coeffs1 = { -1, 0.0, 1.0, alpha - y_val };
+  arma::cx_vec roots1 = poly_roots_arma(coeffs1);
+  
+  std::vector<double> real_roots1;
+  if (roots1.n_elem > 0) {
+    for (size_t i = 0; i < roots1.n_elem; ++i) {
+      std::complex<double> r = roots1(i);
+      if (std::abs(r.imag()) < imag_tol) real_roots1.push_back(r.real());
+    }
+    // fallback: use real parts if none considered real
+    if (real_roots1.empty()) {
+      for (size_t i = 0; i < roots1.n_elem; ++i) real_roots1.push_back(roots1(i).real());
+    }
+  } else {
+    // defensive fallback (shouldn't happen): treat as empty
+    stop("Failed to compute roots of the cubic for x_tilde.");
+  }
+  
+  double t1 = -std::pow(1.0/std::sqrt(3.0), 3) + 1.0/std::sqrt(3.0) + alpha;
+  double t2 = -(-std::pow(1.0/std::sqrt(3.0), 3)) - 1.0/std::sqrt(3.0) + alpha;
+  
+  double x_tilde;
+  if (y_val > t1) {
+    x_tilde = *std::min_element(real_roots1.begin(), real_roots1.end());
+  } else if (y_val < t2) {
+    x_tilde = *std::max_element(real_roots1.begin(), real_roots1.end());
+  } else {
+    // choose root closest to x_val
+    auto it = std::min_element(
+      real_roots1.begin(), real_roots1.end(),
+      [x_val](double a, double b) {
+        return std::abs(a - x_val) < std::abs(b - x_val);
+      }
+    );
+    x_tilde = *it;
+  }
+  
+  // --- form cubic from poly_val1 == poly_val2 and solve for bs
+  // from earlier derivation:
+  // 3*bs^3 - 3*x_val*bs^2 + (gamma - 1)*bs + ( x_val - y_val + beta - gamma*(x_val - x_tilde) ) = 0
+  std::vector<double> coeffs_bs = {
+    3.0,
+    -3.0 * x_val,
+    gamma - 1.0,
+    x_val - y_val + beta - gamma * (x_val - x_tilde)
+  };
+  
+  arma::cx_vec bs_roots = poly_roots_arma(coeffs_bs);
+  
+  // filter real solutions
+  std::vector<double> bs_real;
+  if (bs_roots.n_elem > 0) {
+    for (size_t i = 0; i < bs_roots.n_elem; ++i) {
+      std::complex<double> r = bs_roots(i);
+      if (std::abs(r.imag()) < imag_tol) bs_real.push_back(r.real());
+    }
+    if (bs_real.empty()) {
+      // fallback: use real parts
+      for (size_t i = 0; i < bs_roots.n_elem; ++i) bs_real.push_back(bs_roots(i).real());
+    }
+  }
+  
+  std::sort(bs_real.begin(), bs_real.end());
+  NumericVector b_roots(bs_real.begin(), bs_real.end());
+  
+  // also return the complex roots as an R complex vector for debugging / completeness
+  Rcpp::ComplexVector all_bs_complex(bs_roots.n_elem);
+  for (size_t i = 0; i < (size_t)bs_roots.n_elem; ++i) {
+    all_bs_complex[i] = Rcomplex{bs_roots(i).real(), bs_roots(i).imag()};
+  }
+  
+  return List::create(
+    Named("x_tilde") = x_tilde,
+    Named("b_roots") = b_roots,
+    Named("all_bs_roots_complex") = all_bs_complex
+  );
+}
+
 // [[Rcpp::export]]
 NumericVector fixed_point_rcpp(NumericVector par){
   if (par.size() < 4) stop("par length < 4 in fixed_point_rcpp");
@@ -42,7 +184,7 @@ arma::mat A_rcpp(NumericVector par, NumericVector center, const std::string &met
   double beta  = par[3];
   
   arma::mat A_mat(2,2);
-  if (method == "fix" || method == "piecewise") {
+  if (method == "fix" || method == "piecewise" || method == "custom"|| method == "fast-slow"|| method == "test") {
     double b1 = center[0];
     double c1 = 1.0/eps - 3.0/eps * b1*b1;
     double c2 = -1.0/eps;
@@ -78,13 +220,13 @@ arma::vec ODE(const arma::vec &state, NumericVector par, NumericVector center, c
   
   arma::vec out(2);
   
-  if (method == "fix") {
+  if (method == "fix" || method == "test") {
     double x_star = center[0];
     double dx = ((-std::pow(x,3)) + 3.0 * x_star*x_star * x - 2.0 * std::pow(x_star,3)) / eps;
     double dy = 0.0;
     out(0) = dx; out(1) = dy;
     return out;
-  } else if (method == "piecewise") {
+  } else if (method == "piecewise" || method == "fast-slow" || method == "custom") {
     double b1 = center[0];
     double b2 = center[1];
     double dx = ((-std::pow(x,3)) + 3.0 * b1*b1 * x - 3.0 * std::pow(b1,3) + b1 + alpha - b2) / eps;
@@ -126,15 +268,26 @@ NumericVector fh_rcpp(NumericVector x, double h, NumericVector par, NumericVecto
 // [[Rcpp::export]]
 NumericVector mu_rcpp(NumericVector x, double h, NumericVector par, NumericVector center, const std::string &method) {
   if (x.size() < 2) stop("x length < 2 in mu_rcpp");
+  
+  double eps   = par[0];
+  double alpha = par[1];
+  
   arma::mat A_mat = A_rcpp(par, center, method);
   arma::mat M = arma::expmat(A_mat * h);
   arma::mat I = arma::eye<arma::mat>(2,2);
   
   arma::vec x_vec = as<arma::vec>(x);
   arma::vec b = as<arma::vec>(center);
-  
-  arma::vec res = M * x_vec + (I - M) * b;
-  return NumericVector::create(res(0), res(1));
+  if (method == "test") {  
+    arma::vec Fb(2);
+    Fb(0) = (b(0)-b(0)*b(0)*b(0)+alpha-b(1)) / eps;
+    arma::vec b_tilde = b - arma::solve(A_mat, Fb);
+    arma::vec res = M * x_vec + (I - M) * b_tilde;
+    return NumericVector::create(res(0), res(1));
+  }else{
+    arma::vec res = M * x_vec + (I - M) * b;
+    return NumericVector::create(res(0), res(1));
+  }
 }
 
 // Omega
@@ -160,7 +313,7 @@ arma::mat Omega_rcpp(double h, NumericVector par, NumericVector center, const st
   return result;
 }
 
-// Compute numerical jacobian of f at current state using central finite difference method
+// Equivalent to numDeriv in R
 arma::mat numeric_jacobian_std(std::function<NumericVector(NumericVector)> f, NumericVector x) {
   const double eps = std::numeric_limits<double>::epsilon();
   double step_base = std::pow(eps, 1.0/3.0);
@@ -348,27 +501,89 @@ double log_lik_path_rcpp(NumericMatrix df,
         sum_log_det_D += logdetD;
     }
     
+    
     loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
     return loglik;
-  } else {
+  } else if (method == "fast-slow") {
+    
+    double eps   = par[0];
+    double alpha = par[1];
+    double gamma = par[2];
+    double beta  = par[3];
+    
+    double sum_log_det_Omega = 0.0;
+    double sum_quad = 0.0;
+    double sum_log_det_D = 0.0;
+    
+    for (int i = 0; i < N - 1; ++i) {
+      NumericVector x_old = NumericVector::create(df(i,0), df(i,1));
+      NumericVector x_new = NumericVector::create(df(i+1,0), df(i+1,1));
+      double xold1 = x_old[0];
+      double yold1 = x_old[1];
+      
+      List res = find_b_intersections_arma(x_old, par);   
+      NumericVector b_roots = res["b_roots"];
+      double b1 = b_roots[0];
+      double b2 = (3.0*b1*b1 - 1.0)*xold1 + b1 - 3.0*b1*b1*b1 + yold1;
+      NumericVector b = NumericVector::create(b1, b2);
+      
+      arma::mat Omega = Omega_rcpp(h, par, b, "fast-slow");
+      
+      double logdet, sign;
+      arma::log_det(logdet, sign, Omega);
+      
+      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, b, "fast-slow");
+      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, b, "fast-slow");
+      NumericVector mu_f = mu_rcpp(tmp, h, par, b, "fast-slow");
+      
+      arma::vec z(2);
+      z(0) = finv[0] - mu_f[0];
+      z(1) = finv[1] - mu_f[1];
+      
+      arma::vec temp = arma::solve(Omega, z);     // solves Omega * temp = z
+      double quad = arma::dot(z, temp);
+      
+      // Jacobian D at x_new
+      NumericVector cur_center = b;
+      NumericVector cur_par = par;
+      std::function<NumericVector(NumericVector)> fh_wrapper =
+        [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
+          return fh_rcpp(xx, -h/2.0, cur_par, cur_center, "fast-slow");
+        };
+        arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
+        
+        double sigD = 0.0, logdetD = 0.0;
+        arma::log_det(logdetD, sigD, D);
+        
+        // accumulate
+        sum_log_det_Omega += logdet;
+        sum_quad += quad;
+        sum_log_det_D += logdetD;
+    } 
+    
+    loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
+    return loglik;
+  }else {
     stop("Unknown method in log_lik_path_rcpp");
   }
 }
 
+// equivalent mvrnorm from MASS in R
+// [[Rcpp::export]]
 arma::mat rmvnorm_rcpp(int n, const arma::mat& Sigma) {
+  Rcpp::Environment MASS = Rcpp::Environment::namespace_env("MASS");
+  Rcpp::Function mvrnorm = MASS["mvrnorm"];
   
   int d = Sigma.n_rows;
+  Rcpp::NumericVector mu(d, 0.0);
   
-  // Cholesky (upper)
-  arma::mat chol_Sigma = arma::chol(Sigma);
+  Rcpp::NumericMatrix res = mvrnorm(
+    Rcpp::Named("n") = n,
+    Rcpp::Named("mu") = mu,
+    Rcpp::Named("Sigma") = Rcpp::wrap(Sigma)
+  );
   
-  // standard normals
-  arma::mat Z = arma::randn(n, d);
-  
-  // transform
-  arma::mat samples = Z * chol_Sigma.t();
-  
-  return samples;
+  return Rcpp::as<arma::mat>(res);
 }
 
 // [[Rcpp::export]]
@@ -377,7 +592,8 @@ Rcpp::DataFrame one_step_pred_rcpp(const NumericMatrix x0,
                                    const NumericVector par,
                                    int n,
                                    std::string method = "fix",
-                                   std::string order  = "fmuf") {
+                                   std::string order  = "fmuf",
+                                   NumericVector center = NumericVector::create()) {
   
   int n_x0 = x0.nrow();
   int total = n_x0 * n;
@@ -391,50 +607,49 @@ Rcpp::DataFrame one_step_pred_rcpp(const NumericMatrix x0,
   int pos = 0;
   double alpha = par[1];
   
+  // check user-provided center (if any)
+  if (center.size() != 0 && center.size() != 2) {
+    stop("If supplied, 'center' must have length 2.");
+  }
+  
   // main loop over initial points
   for (int j = 0; j < n_x0; ++j) {
-
+    
     NumericVector x0j = x0(j, _); 
     
-    NumericVector center;
+    NumericVector center_j;
     arma::mat Sigma_noise;
     arma::mat half_Sigma_noise;
     
-
-    // choose center and covariance
-    if (method == "fix") {
-      
-      center = fixed_point_rcpp(par);
-      Sigma_noise      = Omega_rcpp(h, par, center, "fix");
-      half_Sigma_noise = Omega_rcpp(h / 2.0, par, center, "fix");
-      
-    } else if (method == "buckwar") {
-      
-      center = NumericVector::create(0.0, 0.0);
-      Sigma_noise      = Omega_rcpp(h, par, center, "buckwar");
-      half_Sigma_noise = Omega_rcpp(h / 2.0, par, center, "buckwar");
-      
-    } else if (method == "piecewise") {
-      
-      double x = x0(j, 0);
-      
-      if (x < -1.0 / std::sqrt(3.0))
-        center = NumericVector::create(-1.0, alpha);
-      else if (x > 1.0 / std::sqrt(3.0))
-        center = NumericVector::create( 1.0, alpha);
-      else
-        center = NumericVector::create(0.0, alpha);
-      
-      Sigma_noise      = Omega_rcpp(h, par, center, "piecewise");
-      half_Sigma_noise = Omega_rcpp(h / 2.0, par, center, "piecewise");
-      
-    } 
+    // If user provided a center (length 2), use it for every row
+    if (center.size() == 2) {
+      center_j = NumericVector::create(center[0], center[1]);
+    } else {
+      if (method == "fix") {
+        center_j = fixed_point_rcpp(par);
+      } else if (method == "buckwar") {
+        center_j = NumericVector::create(0.0, 0.0);
+      } else if (method == "piecewise") {
+        double x = x0(j, 0);
+        if (x < -1.0 / std::sqrt(3.0))
+          center_j = NumericVector::create(-1.0, alpha);
+        else if (x > 1.0 / std::sqrt(3.0))
+          center_j = NumericVector::create( 1.0, alpha);
+        else
+          center_j = NumericVector::create(0.0, alpha);
+      } else {
+        stop("Unknown method and no center provided");
+      }
+    }
+    
+    // compute covariances using center_j
+    Sigma_noise      = Omega_rcpp(h, par, center_j, method);
+    half_Sigma_noise = Omega_rcpp(h / 2.0, par, center_j, method);
     
     // normal order
-    // =====================================================
     if (order == "fmuf") {
-      NumericVector S1 = fh_rcpp(x0j, h / 2.0, par, center, method);
-      arma::vec muS1 = as<arma::vec>(mu_rcpp(S1, h, par, center, method));
+      NumericVector S1 = fh_rcpp(x0j, h / 2.0, par, center_j, method);
+      arma::vec muS1 = as<arma::vec>(mu_rcpp(S1, h, par, center_j, method));
       
       arma::mat xi_mat = rmvnorm_rcpp(n, Sigma_noise);
       arma::mat S2_mat = xi_mat.each_row() + muS1.t();
@@ -447,7 +662,7 @@ Rcpp::DataFrame one_step_pred_rcpp(const NumericMatrix x0,
         
         arma::vec S3 =
           as<arma::vec>(
-            fh_rcpp(S2k, h / 2.0, par, center, method)
+            fh_rcpp(S2k, h / 2.0, par, center_j, method)
           );
         
         out_x[pos]    = S3(0);
@@ -462,7 +677,7 @@ Rcpp::DataFrame one_step_pred_rcpp(const NumericMatrix x0,
     else if (order == "mufmu") {
       
       arma::vec mu_half =
-        as<arma::vec>(mu_rcpp(x0j, h / 2.0, par, center, method));
+        as<arma::vec>(mu_rcpp(x0j, h / 2.0, par, center_j, method));
       
       arma::mat xi1 = rmvnorm_rcpp(n, half_Sigma_noise);
       arma::mat xi2 = rmvnorm_rcpp(n, half_Sigma_noise);
@@ -473,21 +688,21 @@ Rcpp::DataFrame one_step_pred_rcpp(const NumericMatrix x0,
       NumericVector S_inner_nv(2);
       
       for (int k = 0; k < n; ++k) {
-
+        
         inner_k[0] = inner(k, 0);
         inner_k[1] = inner(k, 1);
-
+        
         arma::vec S_inner =
           as<arma::vec>(
-            fh_rcpp(inner_k, h, par, center, method)
+            fh_rcpp(inner_k, h, par, center_j, method)
           );
-
+        
         S_inner_nv[0] = S_inner(0);
         S_inner_nv[1] = S_inner(1);
         
         arma::vec mu_inner =
           as<arma::vec>(
-            mu_rcpp(S_inner_nv, h / 2.0, par, center, method)
+            mu_rcpp(S_inner_nv, h / 2.0, par, center_j, method)
           );
         
         arma::vec final = mu_inner + xi2.row(k).t();
@@ -506,20 +721,20 @@ Rcpp::DataFrame one_step_pred_rcpp(const NumericMatrix x0,
   
   // build output 
   Rcpp::CharacterVector label(total, "S3");
-    
-    Rcpp::CharacterVector x0_label(total);
-    for (int i = 0; i < total; ++i) {
-      x0_label[i] =
-        std::to_string(out_x0_1[i]) + "_" +
-        std::to_string(out_x0_2[i]);
-    }
-    
-    return Rcpp::DataFrame::create(
-      Rcpp::Named("x") = out_x,
-      Rcpp::Named("y") = out_y,
-      Rcpp::Named("x0_1") = out_x0_1,
-      Rcpp::Named("x0_2") = out_x0_2,
-      Rcpp::Named("label") = label,
-      Rcpp::Named("x0_label") = x0_label
-    );
+  
+  Rcpp::CharacterVector x0_label(total);
+  for (int i = 0; i < total; ++i) {
+    x0_label[i] =
+      std::to_string(out_x0_1[i]) + "_" +
+      std::to_string(out_x0_2[i]);
   }
+  
+  return Rcpp::DataFrame::create(
+    Rcpp::Named("x") = out_x,
+    Rcpp::Named("y") = out_y,
+    Rcpp::Named("x0_1") = out_x0_1,
+    Rcpp::Named("x0_2") = out_x0_2,
+    Rcpp::Named("label") = label,
+    Rcpp::Named("x0_label") = x0_label
+  );
+}

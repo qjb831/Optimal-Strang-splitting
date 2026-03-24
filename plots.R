@@ -1,4 +1,3 @@
-source('Strang.R',keep.source = TRUE)
 library(plotly)
 library(tidyr)
 library(dplyr)
@@ -85,13 +84,22 @@ plot_estimates <- function(est_df, true_params, param_labels,
   
   # Ensure est_df$center is factor with correct levels
   est_df <- est_df %>% mutate(center = factor(center, levels = center_names))
-  
+  est_df <- est_df %>%
+    group_by(param) %>%
+    filter(
+      estimate >= quantile(estimate, 0.01),
+      estimate <= quantile(estimate, 0.99)
+    )
   # Main boxplot
   p <- ggplot(est_df, aes(x = center, y = estimate, fill = center)) +
-    geom_boxplot(outlier.size = 0.1, show.legend = FALSE) +
+    geom_boxplot(outlier.size = 0.3, show.legend = FALSE) +
     geom_point(data = true_df_expanded,
                aes(x = center, y = true_value),
                color = "gold", size = 1, inherit.aes = FALSE) +
+    geom_hline(data = true_df,
+               aes(yintercept = true_value),
+               color = "gold", linewidth = 1,
+               inherit.aes = FALSE,linetype = "dashed")+
     facet_wrap(~ param, scales = "free_y", ncol = 3, labeller = label_parsed) +
     labs(title = title_text,
          subtitle = subtitle,
@@ -99,26 +107,6 @@ plot_estimates <- function(est_df, true_params, param_labels,
     theme_bw(base_size = 13) +
     theme(axis.text.x = element_text(angle = 25, hjust = 1))
   
-  # Compute y-limits for each facet to include true value
-  y_limits <- est_df %>%
-    group_by(param) %>%
-    summarize(
-      min_y = min(estimate, na.rm = TRUE),
-      max_y = max(estimate, na.rm = TRUE),
-      true_y = unique(true_df_expanded$true_value[true_df_expanded$param == first(param)])
-    ) %>%
-    mutate(
-      lower = pmin(min_y, true_y),
-      upper = pmax(max_y, true_y)
-    )
-  
-  # Add invisible points to enforce y-scale
-  y_limits_long <- y_limits %>%
-    select(param, lower, upper) %>%
-    pivot_longer(cols = c(lower, upper), values_to = "y") %>%
-    select(param, y)
-  
-  p <- p + geom_blank(data = y_limits_long, aes(y = y), inherit.aes = FALSE)
   
   return(p)
 }
@@ -325,7 +313,7 @@ plot_steps <- function(df_path, EM_steps, df_steps, b,
       )
     ) +
     labs(x = plane[1], y = plane[2], title = title) +
-    theme_bw(base_size = 17) +
+    theme_bw() +
     guides(
       color = guide_legend(override.aes = list(size = 3)),
       linetype = "none"
@@ -551,9 +539,14 @@ plot_top_k_b_choices_lorenz <- function(paths, x0, b_results, par, h, k = 5,
   }
   
   # Convert x0 into a data frame with proper column names
-  x0_df <- as.data.frame(t(x0))
-  names(x0_df) <- c("x", "y")
-  x0_df$which <- "Initial point"
+  x0 <- as.numeric(x0)
+  stopifnot(length(x0) == 2)
+  
+  x0_df <- data.frame(
+    x = x0[1],
+    y = x0[2],
+    which = "Initial point"
+  )
   
   # Top k choices
   top_k <- b_results[order(b_results$error), ][1:k, ]
@@ -601,84 +594,7 @@ plot_top_k_b_choices_lorenz <- function(paths, x0, b_results, par, h, k = 5,
   return(p)
 }
 
-plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
-                                 xlim = c(-2, 2), ylim = c(-0.2, 2.1)) {
-  library(ggplot2)
-  
-  # Helper: ensure x,y column names
-  ensure_xy <- function(df) {
-    df <- as.data.frame(df)
-    if (all(c("x", "y") %in% names(df))) return(df)
-    if (all(c("X1", "X2") %in% names(df))) {
-      names(df)[names(df) == "X1"] <- "x"
-      names(df)[names(df) == "X2"] <- "y"
-      return(df)
-    }
-    names(df)[1:2] <- c("x", "y")
-    return(df)
-  }
-  
-  # Convert x0 into a data frame with proper column names
-  x0_df <- as.data.frame(t(x0))
-  names(x0_df) <- c("x", "y")
-  x0_df$which <- "Initial point"
-  
-  # Nullcline data
-  xs <- seq(xlim[1], xlim[2], length.out = 400)
-  df_xnull <- data.frame(x = xs, y = xs - xs^3 + par[2], which = "Nullclines")
-  df_ynull <- data.frame(x = xs, y = par[3] * xs + par[4], which = "Nullclines")
-  
-  # Polynomial overlay using x = x0[1]
-  x_val <- x0[1]
-  y_val <- x0[2]
-  df_poly <- data.frame(
-    b1 = xs,
-    poly_val1 = -x_val^3 + 3*xs^2*x_val - 3*xs^3 + 0.5 + xs 
-  )
-  
-  
-  # Top k choices
-  top_k <- b_results[order(b_results$error), ][1:k, ]
-  
-  # Build the plot
-  p <- ggplot() +
-    geom_path(data = ensure_xy(paths[[1]]),
-              aes(x = x, y = y),
-              color = "grey80", linewidth = 0.4) +
-    
-    # Nullclines
-    geom_line(data = df_xnull, aes(x = x, y = y, linetype = which),
-              color = "darkgrey") +
-    geom_line(data = df_ynull, aes(x = x, y = y, linetype = which),
-              color = "darkgrey") +
-    
-    # Polynomial overlay
-    
-    # Top k points
-    geom_point(data = top_k,
-               aes(x = b1, y = b2, color = error),
-               shape = 4, size = 4) +
-    geom_line(data = df_poly, aes(x = b1, y = poly_val1),
-              color = "purple", linewidth = 0.8) +
-    
-    # Initial point
-    geom_point(data = x0_df,
-               aes(x = x, y = y, shape = which),
-               color = "black", size = 2) +
-    
-    scale_color_gradientn(colors = c("yellow", "red"),
-                          name = "Prediction Error") +
-    scale_shape_manual(name = "", values = c("Initial point" = 19)) +
-    scale_linetype_manual(name = "", values = c("Nullclines" = "dashed")) +
-    
-    labs(x = 'x',
-      y = 'y'
-    ) +
-    coord_cartesian(xlim = xlim, ylim = ylim) +
-    theme_bw()
-  
-  return(p)
-}
+
 
 plot_top_k_b_choices_lorenz_XZ_plane <- function(path, x0, b_results, par, h, k = 5,
                                         xlim = c(-20, 20), ylim = c(0, 40)) {
@@ -771,17 +687,108 @@ plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
   
   # Nullcline data
   xs <- seq(xlim[1], xlim[2], length.out = 400)
+  bs <- seq(xlim[1], xlim[2], length.out = 400)
   df_xnull <- data.frame(x = xs, y = xs - xs^3 + par[2], which = "Nullclines")
   df_ynull <- data.frame(x = xs, y = par[3] * xs + par[4], which = "Nullclines")
   
   # Polynomial overlay using x = x0[1]
   x_val <- x0[1]
-  df_poly <- data.frame(
-    b1 = xs,
-    poly_val1 = -x_val^3 + 3*xs^2*x_val - 3*xs^3 + 0.5 + xs,
-    poly_val2 = 1.5*xs+1.4
-  )
+  y_val <- x0[2]
+  eps <- par[1]
+  alpha <- par[2]
+  gamma <- par[3]
+  beta <- par[4]
+  roots <- polyroot(c(alpha-y_val,1,0,-1))
+  if (y_val > -(1/sqrt(3))^3+1/sqrt(3)+alpha){
+    x_tilde <- min(Re(roots[abs(Im(roots))<0.00001]))
+  }else if (y_val < -(-1/sqrt(3))^3-1/sqrt(3)+alpha) {
+    x_tilde <- max(Re(roots[abs(Im(roots))<0.00001]))
+  }else{
+    
+    real_roots <- Re(roots[abs(Im(roots)) < 0.00001])
+    x_tilde <- real_roots[which.min(abs(real_roots - x_val))]
+  }
+  x_tilde_min <- min(Re(roots[abs(Im(roots))<0.00001]))
+  x_tilde_med <- median(Re(roots[abs(Im(roots))<0.00001]))
+  x_tilde_max <- max(Re(roots[abs(Im(roots))<0.00001]))
   
+  
+  
+  # n <- length(xs)
+  # 
+  # b2_vals <- numeric(n)
+  # fh_vals <- numeric(n)
+  # 
+  # for (i in seq_along(xs)) {
+  #   
+  #   b1 <- xs[i]
+  #   
+  #   find_b2 <- function(b2){
+  #     fh <- fh_rcpp(c(x_val,y_val), -0.07/2,par, center=c(b1,b2), method='custom')
+  #     abs(-3*b1^2*fh[1] - b1 + 3*b1^3 + b2 + fh[1]^3 - alpha)
+  #   }
+  #   
+  #   opt <- optimize(find_b2, interval = c(-2,2))
+  #   
+  #   b2_vals[i] <- opt$minimum
+  #     }
+  
+  # OU <- function(x, b1, b2){
+  #   (x - 3*b1^2*x - y_val - b1 + 3*b1^3 + b2) 
+  # }
+  # 
+  # N <- function(x, b1, b2){
+  #   (-x^3 + 3*b1^2*x - 3*b1^3 + b1 + 0.5 - b2) 
+  # }
+  # 
+  # n <- length(xs)
+  # 
+  # b2_vals <- numeric(n)
+  # 
+  # for (i in seq_along(xs)) {
+  #   
+  #   b1 <- xs[i]
+  #   
+  #   find_b2 <- function(b2){
+  #     
+  #     f1 <- N(x_val, b1, b2) / 2
+  #     f2 <- OU(f1, b1, b2)
+  #     f3 <- N(f2, b1, b2) / 2
+  #     
+  #     Fh  <- N(x_val, b1, b2) + OU(x_val, b1, b2)
+  #     
+  #     abs(f1 - Fh)
+  #   }
+  #   
+  #   opt <- optimize(find_b2, interval = c(-0.7,2))
+  #   
+  #   b2_vals[i] <- opt$minimum
+  # }
+  # sigma <- par[5]
+  # bias<-function(h,b,x0,y_val){
+  #   N <- function(x){(1/eps)*(-x^3+3*b^2*x+b-3*b^3+alpha-y_val)}
+  #   dN <- function(x){(1/eps)*(-3*x^2+3*b^2)}
+  #   d2N <- function(x){-6*x/eps}
+  #   d3N <- function(x){-6/eps}
+  #   A <- (1-3*b^2)/eps
+  #   E <- function(x){ 
+  #     (3/8)*A*dN(x)*N(x) + (1/4)*A^2*N(x) + (1/6)*A^3*(x-b) + (1/6)*d2N(x)*N(x)^2+(1/6)*dN(x)^2*N(x) +  (1/4)*dN(x)*A^2*(x-b) + (1/4)*d2N(x)*A^2*(x-b)^2 + (3/8)*d2N(x)*N(x)*A*(x-b) + (1/8)*dN(x)^2*A*(x-b)+ sigma^2 *( (1/4)*A*d2N(x) + (3/16)*d2N(x)*dN(x)+(1/4)*d3N(x)*A*(x-b)+(3/16)*d3N(x)*N(x) )   }
+  #   true_E <- function(x){
+  #     (1/3)*A*dN(x)*N(x) + (1/6)*A^2*N(x) + (1/6)*A^3*(x-b) + (1/6)*d2N(x)*N(x)^2+(1/6)*dN(x)^2*N(x) +  (1/3)*dN(x)*A^2*(x-b) + (1/6)*d2N(x)*A^2*(x-b)^2 + (1/3)*d2N(x)*N(x)*A*(x-b) + (1/6)*dN(x)^2*A*(x-b)+ sigma^2 *( (1/4)*A*d2N(x) + (1/4)*d2N(x)*dN(x)+(1/12)*d3N(x)*A*(x-b)+(1/12)*d3N(x)*N(x) ) }
+  #   err <- function(x){h^3 * (E(x)-true_E(x))}
+  #   return(abs(err(x0)))
+  # }
+  
+  new_roots <- polyroot(c(-(gamma-1)*(x_tilde)+alpha-beta,0,-3*(x_tilde),2))
+  b_tilde <- min(Re(new_roots[abs(Im(new_roots))<0.00001]))
+  df_poly <- data.frame(
+    b1 = bs,
+    # poly_val1 = -x_val^3 + 3*bs^2*x_val - 3*bs^3 + alpha + bs, # N=0
+    # poly_val2 = (3*bs^2-1)*x_tilde+bs-3*bs^3+y_val,
+    # poly_val3 = (3*bs^2-1)*x_val+bs-3*bs^3+y_val, # N=F
+    # poly_val4 = beta-gamma*(x_val-x_tilde-bs)
+    poly_val5 = -3*y_val*bs^2+gamma*bs-(gamma-1)*y_val+beta
+  )
   
   # Top k choices
   top_k <- b_results[order(b_results$error), ][1:k, ]
@@ -801,9 +808,18 @@ plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
               show.legend = FALSE) +
     
     # Polynomial overlay
-    geom_line(data = df_poly, aes(x = b1, y = poly_val1),
-              color = "purple", linewidth = 0.6) +
-    
+    # geom_line(data = df_poly, aes(x = b1, y = poly_val2),
+    #           color = "green", linewidth = 0.6) +
+    # geom_line(data = df_poly, aes(x = b1, y = poly_val1),
+    #           color = "purple", linewidth = 0.6) +
+    # geom_line(data = df_poly, aes(x = b1, y = poly_val3),
+    #           color = "red", linewidth = 0.6) +
+    # geom_line(data = df_poly, aes(x = b1, y = poly_val4),
+    #           color = "red", linewidth = 0.6) +
+    geom_line(data = df_poly, aes(x = b1, y = poly_val5),
+              color = "red", linewidth = 0.6) +
+    geom_vline(xintercept = b_tilde,color = "red", linewidth = 0.6) +
+
     
     # Top k points
     geom_point(data = top_k,

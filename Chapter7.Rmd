@@ -13,44 +13,41 @@ knitr::opts_chunk$set(echo = TRUE)
 source('Brownian_motion.R',keep.source = TRUE)
 source('EM.R',keep.source = TRUE)
 source('plots.R',keep.source = TRUE)
+sourceCpp("DoubleWell.cpp") # functions for Strang splitting and likelihood 
 
 ########################################################
 # Step 1: Definer 0=t_0<t_1<...<t_N=T og drift- og noise-funktioner
 ########################################################
 t_0 <- 0
-N <- 1000000
+N <- 600000
 h <- 0.0001
 T <- N*h
 times <- seq(t_0,N*h,length.out=N+1)
 # noisy_times <- sort(times + rnorm(length(times), mean = 0, sd = 0.1))
 
 # drift term
-F <- function(x,theta = c(0.5, -0.05)){
+F <- function(x,theta = c(0.2, -0.05)){
   eps<-theta[1]; y<-theta[2]
   (x[1]-x[1]^3-y)/eps
 }
 
 
 # additive noise term
-G <- function(x, Sigma = c(0.6)) Sigma
+G <- function(x, Sigma = c(1.4)) Sigma
 
 ########################################################
 # Step 3: Euler-Maruyama simulation af SDE løsningen med plots. M_reps repetitions.
 ########################################################
 
 x0 <- c(0)
-n_paths <- 10
+n_paths <- 1000
 paths <- EM_sim_fast(F,G,x0,times,n_paths,progress = TRUE)
 
 # Plot første repetition
-plot_variable_vs_time(paths[[3]],times,to_time = T)
-```
-
-
-```{r}
+#plot_variable_vs_time(paths[[1]],times,to_time = T)
 
 # Definer eventuelt sub paths
-ratio <- 2000
+ratio <- 400
 sub_h <- h*ratio
 sub_times <- seq(t_0,N*h,length.out=N/ratio+1)
 idx <- seq(1,N+1,by=ratio)
@@ -59,26 +56,28 @@ sub_paths <- lapply(paths, function(path) {
   # ensure idx are in bounds
   valid_idx <- idx[idx <= nrow(df)]
   df_sub <- df[valid_idx, , drop = FALSE]
-  # rename single column to "X" if there is one column; otherwise you might want to keep names
   if (ncol(df_sub) == 1) {
     names(df_sub) <- "X"
   }
   df_sub
 })
-plot_variable_vs_time(sub_paths[[1]],sub_times,T)
+#plot_variable_vs_time(sub_paths[[1]],sub_times,T)
+write.csv(bind_rows(sub_paths, .id = "path_id"), "doublewell_paths.csv", row.names = FALSE)
+```
+
+
+```{r}
 
 
 
-Rcpp::sourceCpp("DoubleWell.cpp")
 
-centers <- list("fix","unbiased")  # single string per center
-center_names <- c('Standard fixed point linearization',"Unbiased estimator")
+
+
+centers <- list("fix","optimal bias new")  # single string per center
+center_names <- c('Standard fixed point linearization',"Unbiased estimator (N_tilde)")
 
 # True parameter vector (for overlay)
-true_params <- c(0.5, -0.05, 0.6)
-
-# Starting parameter vector for optimization
-start_params <- c(0.2, 0.1, 0.1)
+true_params <- c(0.2, -0.05, 1.4)
 
 # Labels for parameters
 param_labels <- c("epsilon", "y", "sigma")
@@ -91,27 +90,25 @@ fit_for_center <- function(center_vec, show_progress = FALSE) {
   for (i in seq_along(sub_paths)) {
     if (show_progress) message("  fitting path ", i, " / ", n_paths)
     this_path <- sub_paths[[i]]
-    par0 <- start_params
+    par0 <- true_params[1:2] + c(runif(1,-0.15,0.15),runif(1,-0.3,0.3))
     
     # Objective: MINIMIZE negative log-likelihood
     obj <- function(par, path, times) {
-      theta_drift     <- par[1:2]
-      theta_diffusion <- par[3]
+      theta_drift <- c(par[1], par[2])
       
-      ll <- tryCatch(
-        log_lik_path_rcpp(as.matrix(path), times, theta_drift, theta_diffusion,
-                          method = center_vec),  # already a string
-        error = function(e) NA_real_
+      res <- tryCatch(
+        log_lik_path_rcpp(as.matrix(path), times, theta_drift,
+                          method = center_vec),
+        error = function(e) NULL
       )
       
-      if (!is.numeric(ll) || !is.finite(ll)) {
+      if (is.null(res) || !is.finite(res$ll)) {
         return(1e20)
       }
       
-      return(ll)  # minimize negative log-likelihood
+      return(res$ll)   # or -res$ll depending on your definition
     }
     
-    # Optimize
     fit <- optim(par    = par0,
                  fn     = obj,
                  path   = this_path,
@@ -120,7 +117,13 @@ fit_for_center <- function(center_vec, show_progress = FALSE) {
                  control = list(maxit = 5000, trace = 0)
     )
     
-    preds[[i]] <- fit$par
+    # recompute sigma at optimum
+    final_res <- log_lik_path_rcpp(as.matrix(this_path),
+                                  sub_times,
+                                  fit$par[1:2],
+                                  method = center_vec)
+    
+    preds[[i]] <- c(fit$par, final_res$sigma)
   }
   
   # Convert results to data.frame
@@ -153,7 +156,6 @@ all_results <- bind_rows(all_results_list)
 all_results <- all_results %>% 
   filter(!apply(select(., all_of(param_labels)), 1, function(r) all(is.na(r))))
 
-# ---------------------- format for plotting -----------------------
 est_df <- all_results %>%
   pivot_longer(cols = all_of(param_labels),
                names_to = "param",
@@ -161,46 +163,16 @@ est_df <- all_results %>%
   mutate(param = factor(param, levels = param_labels),
          center = factor(center, levels = center_names))
 
-# expand true values to each center so geom_point can map to center
-true_df <- tibble(param = param_labels, true_value = true_params)
-true_df_expanded <- expand_grid(param = param_labels, center = center_names) %>%
-  left_join(true_df, by = "param") %>%
-  mutate(center = factor(center, levels = center_names))
+# ---------------------- use your new plotting function -----------------------
+p <- plot_estimates(
+  est_df       = est_df,
+  true_params  = true_params,
+  param_labels = param_labels,
+  center_names = center_names,
+  title_text   = "Parameter Estimates Across Methods",
+  subtitle     = "SDE estimation comparison"
+)
 
-# ---------------------- plotting -----------------------
-p <- ggplot(est_df, aes(x = center, y = estimate, fill = center)) +
-  geom_boxplot(outlier.size = 0.1, show.legend = FALSE) +
-  geom_point(data = true_df_expanded,
-             aes(x = center, y = true_value),
-             color = "gold", size = 1, inherit.aes = FALSE) +
-  facet_wrap(~ param, scales = "free_y", ncol = 3, labeller = label_parsed) +
-  labs(x = "Method", y = "Estimate") +
-  theme_bw(base_size = 13) +
-  theme(axis.text.x = element_text(angle = 25, hjust = 1)) +
-  geom_hline(data = true_df_expanded,
-             aes(yintercept = true_value),
-             color = "yellow",
-             linewidth = 0.6,
-             linetype = "dashed",
-             inherit.aes = FALSE)
-
-# compute per-facet limits and add invisible points to fix y-scale
-y_limits <- est_df %>%
-  group_by(param) %>%
-  summarize(min_y = min(estimate), max_y = max(estimate), .groups = "drop") %>%
-  left_join(true_df, by = "param") %>%
-  mutate(range = max_y - min_y,
-         lower = pmin(min_y, true_value - 0.2*range),
-         upper = pmax(max_y, true_value + 0.2*range))
-
-y_limits_long <- y_limits %>%
-  select(param, lower, upper) %>%
-  pivot_longer(cols = c(lower, upper), values_to = "y") %>%
-  select(param, y)
-
-p <- p + geom_blank(data = y_limits_long, aes(y = y), inherit.aes = FALSE)
-
-# show plot
 print(p)
 ```
 

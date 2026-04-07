@@ -1,8 +1,8 @@
 
 
-y <- 0
-sigma <- 0.5
-epsilon <- 0.1
+y <- 0.05
+sigma <- 1.4
+epsilon <- 0.2
 
 
 B <- function(b,x){
@@ -16,7 +16,25 @@ B <- function(b,x){
   c7 <- 3/(8*epsilon^3)
   return(c0+c1*b+c2*b^2+c3*b^3+c4*b^4+c5*b^5+c6*b^6+c7*b^7)
 }
+absB <- function(b,x) abs(B(b,x))
 
+x_seq = seq(-1.4,1.4,0.001)
+b_seq = seq(-1.4,1.4,0.001)
+z = outer(b_seq, x_seq, absB)
+colnames(z) = b_seq
+rownames(z) = x_seq
+
+dat = as.data.frame(z) %>% 
+  rownames_to_column(var="x_seq") %>% 
+  gather(b_seq, value, -x_seq) %>% 
+  mutate(b_seq=as.numeric(b_seq), 
+         x_seq=as.numeric(x_seq)) %>% 
+  mutate(value = pmax(value, 1e-10))
+
+ggplot(dat, aes(b_seq, x_seq, fill=value)) + 
+  geom_raster() +
+  scale_fill_gradient(low="yellow", high="red",trans="log10") +
+  theme_classic()
 
 
 inv <- function(x){exp(2*(0.5*x^2-0.25*x^4-y*x)/(sigma^2*epsilon))}

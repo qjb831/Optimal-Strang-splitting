@@ -40,14 +40,14 @@ G <- function(x, Sigma = c(1.4)) Sigma
 ########################################################
 
 x0 <- c(0)
-n_paths <- 1000
+n_paths <- 10
 paths <- EM_sim_fast(F,G,x0,times,n_paths,progress = TRUE)
 
 # Plot første repetition
 #plot_variable_vs_time(paths[[1]],times,to_time = T)
 
 # Definer eventuelt sub paths
-ratio <- 400
+ratio <- 100
 sub_h <- h*ratio
 sub_times <- seq(t_0,N*h,length.out=N/ratio+1)
 idx <- seq(1,N+1,by=ratio)
@@ -61,8 +61,53 @@ sub_paths <- lapply(paths, function(path) {
   }
   df_sub
 })
-#plot_variable_vs_time(sub_paths[[1]],sub_times,T)
-write.csv(bind_rows(sub_paths, .id = "path_id"), "doublewell_paths.csv", row.names = FALSE)
+plot_variable_vs_time(sub_paths[[1]],sub_times,T)
+#write.csv(bind_rows(sub_paths, .id = "path_id"), "doublewell_paths.csv", row.names = FALSE)
+```
+```{r}
+if (sim_new_paths){
+  full_paths <- EM_sim_fast(F,G,x0=c(0,0),times,n_paths=15,progress=TRUE)
+  paths <- lapply(full_paths, function(path) path[idx,])
+  
+  #write.csv(bind_rows(sub_paths, .id = "path_id"), "fitzhugh_paths.csv", row.names = FALSE)
+}else{
+  paths_df <- read.csv("doublewell_paths.csv")
+  paths <- paths_df %>%
+    split(.$path_id) %>%
+    lapply(select, -path_id)
+}
+
+path_bias_left <- function(b) bias(b, subset(paths[[1]],X<0)$X, c(0.2, -0.05, 1.4))
+path_bias_right <- function(b) bias(b, subset(paths[[1]],X>0)$X, c(0.2, -0.05, 1.4))
+path_bias_all <- function(b) bias(b, paths[[1]]$X, c(0.2, -0.05, 1.4))
+
+optimize(path_bias_left,c(-1.2,0))
+optimize(path_bias_right,c(0,1.2))
+optimize(path_bias_all,c(-1.2,1.2))
+
+b_vals_left <- seq(-1.2, 0, length.out = 200)
+y_vals_left <- sapply(b_vals_left, path_bias_left)
+
+b_vals_right <- seq(0, 1.2, length.out = 200)
+y_vals_right <- sapply(b_vals_right, path_bias_right)
+
+b_vals_all <- seq(-1.2, 1.2, length.out = 200)
+y_vals_all <- sapply(b_vals_all, path_bias_all)
+
+
+
+plot(b_vals_left, y_vals_left, type = "l",
+     xlab = "b", ylab = "bias",
+     main = "Bias as a function of b",
+     lwd = 2)
+plot(b_vals_right, y_vals_right, type = "l",
+     xlab = "b", ylab = "bias",
+     main = "Bias as a function of b",
+     lwd = 2)
+plot(b_vals_all, y_vals_all, type = "l",
+     xlab = "b", ylab = "bias",
+     main = "Bias as a function of b",
+     lwd = 2)
 ```
 
 
@@ -73,8 +118,8 @@ write.csv(bind_rows(sub_paths, .id = "path_id"), "doublewell_paths.csv", row.nam
 
 
 
-centers <- list("fix","optimal bias new")  # single string per center
-center_names <- c('Standard fixed point linearization',"Unbiased estimator (N_tilde)")
+centers <- c("fix","avg bias")
+center_names <- c('Standard fixed point linearization',"global optimal bias")
 
 # True parameter vector (for overlay)
 true_params <- c(0.2, -0.05, 1.4)
@@ -86,19 +131,18 @@ param_labels <- c("epsilon", "y", "sigma")
 fit_for_center <- function(center_vec, show_progress = FALSE) {
   n_paths <- length(paths)
   preds <- vector("list", n_paths)
-  
   for (i in seq_along(sub_paths)) {
     if (show_progress) message("  fitting path ", i, " / ", n_paths)
     this_path <- sub_paths[[i]]
-    par0 <- true_params[1:2] + c(runif(1,-0.15,0.15),runif(1,-0.3,0.3))
+    par0 <- c(0.1,0,1)
     
-    # Objective: MINIMIZE negative log-likelihood
     obj <- function(par, path, times) {
-      theta_drift <- c(par[1], par[2])
-      
+      theta_drift <- par[1:2]
+      theta_diffusion <- par[3]^2
+      b <- optimize(bias,c(-1.2,1.2), as.matrix(path), par)$minimum
       res <- tryCatch(
-        log_lik_path_rcpp(as.matrix(path), times, theta_drift,
-                          method = center_vec),
+        log_lik_path_rcpp(as.matrix(path), times, theta_drift,theta_diffusion,
+                          method = center_vec,b),
         error = function(e) NULL
       )
       
@@ -106,7 +150,7 @@ fit_for_center <- function(center_vec, show_progress = FALSE) {
         return(1e20)
       }
       
-      return(res$ll)   # or -res$ll depending on your definition
+      return(res$ll)  
     }
     
     fit <- optim(par    = par0,
@@ -118,12 +162,14 @@ fit_for_center <- function(center_vec, show_progress = FALSE) {
     )
     
     # recompute sigma at optimum
-    final_res <- log_lik_path_rcpp(as.matrix(this_path),
-                                  sub_times,
-                                  fit$par[1:2],
-                                  method = center_vec)
+    # final_res <- log_lik_path_rcpp(as.matrix(this_path),
+    #                               sub_times,
+    #                               fit$par[1:2],
+    #                               method = center_vec,
+    #                               sigma = sigma_mle)
     
-    preds[[i]] <- c(fit$par, final_res$sigma)
+    # sigma_mle <- final_res$sigma # updated via MLE
+    preds[[i]] <- fit$par
   }
   
   # Convert results to data.frame

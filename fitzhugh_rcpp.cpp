@@ -272,13 +272,13 @@ arma::vec ODE(const arma::vec &state, NumericVector par, NumericVector center, c
   
   arma::vec out(2);
   
-  if (method == "fix" || method == "test") {
+  if (method == "fix" || method == "test" || method == "custom") {
     double x_star = center[0];
     double dx = ((-std::pow(x,3)) + 3.0 * x_star*x_star * x - 2.0 * std::pow(x_star,3)) / eps;
     double dy = 0.0;
     out(0) = dx; out(1) = dy;
     return out;
-  } else if (method == "piecewise" || method == "fast-slow" || method == "fast" || method == "custom") {
+  } else if (method == "piecewise" || method == "fast-slow" || method == "fast" ) {
     double b1 = center[0];
     double b2 = center[1];
     double dx = ((-std::pow(x,3)) + 3.0 * b1*b1 * x - 3.0 * std::pow(b1,3) + b1 + alpha - b2) / eps;
@@ -332,7 +332,7 @@ NumericVector mu_rcpp(NumericVector x, double h, NumericVector par, NumericVecto
   
   arma::vec x_vec = as<arma::vec>(x);
   arma::vec b = as<arma::vec>(center);
-  if (method == "test") {  
+  if (method == "test" || method == "custom") {  
     
     
     arma::vec Fb(2);
@@ -422,11 +422,12 @@ arma::mat numeric_jacobian_std(std::function<NumericVector(NumericVector)> f, Nu
 }
 
 // [[Rcpp::export]]
-double log_lik_path_rcpp(NumericMatrix df,
+Rcpp::List log_lik_path_rcpp(NumericMatrix df,
                          NumericVector times,
                          NumericVector theta_drift,
                          NumericVector theta_diffusion,
-                         const std::string &method) {
+                         const std::string &method,
+                         NumericVector custom_b) {
   // combine parameters: theta_drift then theta_diffusion
   int nd = theta_drift.size();
   int ns = theta_diffusion.size();
@@ -449,12 +450,14 @@ double log_lik_path_rcpp(NumericMatrix df,
   arma::mat Inv_Omega;
   double signO = 0.0, logdetO = 0.0;
   
-  if (method == "fix" || method == "buckwar") {
+  if (method == "fix" || method == "buckwar"|| method == "custom") {
     // choose center
     if (method == "fix"){
       center = fixed_point_rcpp(par);
-    } else { // buckwar
+    } else if (method == "buckwar"){ 
       center = NumericVector::create(0.0, 0.0);
+    } else if (method == "custom") { // buckwar
+      center = custom_b;
     }
     Omega_mat = Omega_rcpp(h, par, center, method);
     Inv_Omega = arma::inv(Omega_mat); 
@@ -465,7 +468,7 @@ double log_lik_path_rcpp(NumericMatrix df,
     double sum_log_det_Omega = 0.0;
     double sum_quad = 0.0;
     double sum_log_det_D = 0.0;
-    
+    arma::vec Z = arma::vec(2);
     for (int i = 0; i < N - 1; ++i) {
       NumericVector x_old = NumericVector::create(df(i,0), df(i,1));
       NumericVector x_new = NumericVector::create(df(i+1,0), df(i+1,1));
@@ -481,7 +484,7 @@ double log_lik_path_rcpp(NumericMatrix df,
       arma::vec z(2);
       z(0) = finv[0] - mu_f[0];
       z(1) = finv[1] - mu_f[1];
-      
+      Z += z;
       arma::vec temp = Inv_Omega * z;
       double quad = arma::dot(z, temp);
       
@@ -503,7 +506,10 @@ double log_lik_path_rcpp(NumericMatrix df,
     }
     
     loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
+    return List::create(
+        Named("ll") = loglik,
+        Named("Z") = Z
+    );
   } else if (method == "piecewise") {
     double alpha = par[1];
     NumericVector b_left  = NumericVector::create(-1.0, alpha);

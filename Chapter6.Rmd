@@ -26,7 +26,7 @@ T <- N*h
 times <- seq(0,N*h,length.out=N+1)
 
 # Configuration for sub-sampled paths
-sub_h <- 0.07
+sub_h <- 0.18
 ratio <- sub_h / h
 sub_times <- seq(0,N*h,length.out=N/ratio+1)
 idx <- seq(1,N+1,by=ratio)
@@ -73,7 +73,7 @@ Plots for Figure 1
 example_path <- EM_sim_fast(F,G,x0=c(0,0),times,n_paths=1,progress=FALSE)
 
 # Plot one path
-plot_2d_curve(example_path[[1]])
+plot_2d_curve(paths[[1]])
 
 # Plot phase portrait of FHN drift
 plot_FHN_phase_portrait(par=c(0.05,0.5,1.5,1.4))

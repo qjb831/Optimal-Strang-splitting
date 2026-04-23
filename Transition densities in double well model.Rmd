@@ -1,0 +1,157 @@
+---
+title: "Distributions of one step predictions in double well"
+author: "Johan Ravn Cornelius"
+date: "2026-04-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source('Brownian_motion.R',keep.source = TRUE)
+source('EM.R',keep.source = TRUE)
+library(ggplot2)
+library(latex2exp)
+```
+
+Double-well potential model, including choice of parameters:
+```{r}
+y <- 0.05
+eps <- 0.2
+sigma <- 1.2
+
+F <- function(x){(x-x^3-y)/eps}
+DF <- function(x){(1-3*x^2)/eps}
+G <- function(x){sigma}
+```
+
+Splitting scheme functions:
+```{r}
+A <- function(c){DF(c)}
+btilde <- function(c){ c - F(c)/DF(c) }
+N <- function(x,c){(-x^3+3*c^2*x-2*c^3)/eps}
+muh <- function(x,h,c){exp(A(c)*h)*x+(1-exp(A(c)*h))*btilde(c)}
+Omegah <- function(h,c){  sigma^2 * (exp(2*A(c)*h)-1)/(2*A(c))  }
+fh_fun <- function(x, h,c) {
+  ODEfun <- function(t, state, parms) {
+    u1 <- state[1]
+    du1 <- N(u1,c)
+    list(c(du1)) }
+  out <- deSolve::ode(y = x, times = c(0, h), func = ODEfun, parms = NULL, method = 'rk4')
+  as.numeric(out[nrow(out), -1])
+}
+```
+
+Choice of transition density:
+```{r}
+x0 <- -1.4
+h <- 0.1
+```
+
+Number of simulations:
+```{r}
+M <- 10000
+```
+
+Simulating EM steps (independent of chosen splitting):
+```{r}
+hEM <- h/1000
+EMtimes <- seq(0,h,by=hEM)
+EMsim <- rep(NA,M)
+for(i in 1:M){
+  EMsteps <-  EM_sim_fast(F,G,x0,EMtimes,n_paths=1,progress = FALSE)[[1]]
+  EMsim[i] <- EMsteps[nrow(EMsteps),1]
+}
+EMdata <- data.frame(EMsim)
+```
+
+Finding a c that minimizes bias function:
+```{r}
+B <- function(b,x,y,eps,sigma){
+  denom <- 1/(24*eps^3)
+  top <- (-6*b^3+3*y)*x^4 +
+    x^3*(-36*b^4-24*sigma^2*eps+36*b^2-8) +
+    x^2*(54*(b^3-y)*(b^2-1/3)) +
+    x*(-24*b^6+54*b^2*eps*sigma^2+36*b^3*y-12*sigma^2*eps-12*y^2) +
+    6*b^5-9*b^4*y+b^3*(-18*sigma^2*eps-4) +
+    6*b^2*y+12*eps*sigma^2*y
+  return(top*denom)
+}
+get_roots <- function(y){
+  r <- polyroot(c(-y, 1, 0, -1))  # x^3 - x + y = 0
+  r <- Re(r[abs(Im(r)) < 1e-8])  # keep real roots
+  sort(r)
+}
+inv <- function(x,y,sigma,eps){exp(2*(0.5*x^2-0.25*x^4-y*x)/(sigma^2*eps))}
+avg_absbias <- function(b,y,eps,sigma){
+  uns_root <- median(get_roots(y))
+  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
+  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , -Inf,uns_root,y,sigma,eps)$value
+  integrand <- function(x){
+    abs(B(b,x,y,eps,sigma) * inv(x,y,sigma,eps) / Z)
+  }
+  abs(integrate(integrand, -Inf, uns_root)$value*p_inv)
+}
+B_obj <- function(b,x,y,eps,sigma){abs(B(b,x,y,eps,sigma))}
+
+c2 <- optimize(f=avg_absbias,y=y,eps=eps,sigma=sigma,interval=c(0.6,2))$minimum
+c2 <- optimize(f=B_obj,x=x0,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
+```
+
+
+Simulating from Strang splitting scheme:
+```{r}
+StrangSim <- function(x0,h,c,M){
+  X0 <- rep(x0,M)
+  xi <- rnorm(M,0,sqrt(Omegah(h,c)))
+  step1 <- mapply(fh_fun,X0,h/2,c)
+  step2 <- mapply(muh,step1,h,c)+xi
+  step3 <- mapply(fh_fun,step2,h/2,c)
+  return(step3)
+}
+```
+
+
+```{r}
+c <- min(Re(polyroot(c(-y,1,0,-1)))) #local attractor
+StrangSim1 <- StrangSim(x0,h,c,M)
+StrangData1 <- data.frame(StrangSim1)
+```
+
+
+```{r}
+c <- c2 #bias optimizer in other well
+StrangSim2 <- StrangSim(x0,h,c,M)
+StrangData2 <- data.frame(StrangSim2)
+```
+
+```{r}
+c <- 0 #unstable fixed point
+StrangSim3 <- StrangSim(x0,h,c,M)
+StrangData3 <- data.frame(StrangSim3)
+```
+
+```{r}
+c <- max(Re(polyroot(c(-y,1,0,-1))))  #opposite attractor
+StrangSim4 <- StrangSim(x0,h,c,M)
+StrangData4 <- data.frame(StrangSim4)
+```
+
+
+
+Plotting histograms:
+```{r}
+colors <- c("StrangFix"="red", "StrangMin"="green", "StrangUns"="darkgrey" ,
+            "StrangWrong"="gold", "EM"="blue")
+ggplot()+
+  geom_density(data=EMdata,aes(x=EMsim,colour="EM"))+
+  geom_density(data=StrangData1,aes(x=StrangSim1,colour="StrangFix"))+
+  geom_density(data=StrangData2,aes(x=StrangSim2,colour="StrangMin"))+
+ #geom_density(data=StrangData3,aes(x=StrangSim3,colour="StrangUns"))+
+#  geom_density(data=StrangData4,aes(x=StrangSim4,colour="StrangWrong"))+
+  theme_bw()+ scale_colour_manual(values=colors)+
+  labs(x=TeX('$X_h$'),y="Density",colour="Distribution")
+```
+

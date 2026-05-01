@@ -1,354 +1,9 @@
 // doublewell_rcpp.cpp
 // [[Rcpp::depends(RcppArmadillo)]]
 #include <RcppArmadillo.h>
-#include <complex>
-#include <algorithm>
-#include <limits>
-#include <cmath>
-#include <array>
-#include <vector>
-#include <string>
-
 using namespace Rcpp;
 
 
-static arma::cx_vec poly_roots_companion(const arma::vec& a, double tol = 1e-12) {
-  int deg = static_cast<int>(a.n_elem) - 1;
-  
-  // Trim trailing near-zero leading coefficients
-  while (deg > 0 && std::abs(a[deg]) < tol) {
-    --deg;
-  }
-  
-  if (deg == 0) {
-    return arma::cx_vec(); // no roots
-  }
-  
-  if (deg == 1) {
-    arma::cx_vec roots(1);
-    roots[0] = std::complex<double>(-a[0] / a[1], 0.0);
-    return roots;
-  }
-  
-  arma::mat C(deg, deg, arma::fill::zeros);
-  
-  // Subdiagonal ones
-  C.submat(1, 0, deg - 1, deg - 2).eye();
-  
-  // First row: -a[deg-1:0] / a[deg]
-  for (int j = 0; j < deg; ++j) {
-    C(0, j) = -a[deg - 1 - j] / a[deg];
-  }
-  
-  return arma::eig_gen(C);
-}
-
-inline bool is_near_singularity(double z, double tol = 0) {
-  const double target = 1.0 / std::sqrt(3.0);
-  return (std::abs(z - target) < tol) || (std::abs(z + target) < tol);
-}
-
-static double eval_poly(const arma::vec& coeffs, double z) {
-  // coeffs[0] + coeffs[1] z + ... + coeffs[n] z^n
-  double val = 0.0;
-  for (arma::sword i = static_cast<arma::sword>(coeffs.n_elem) - 1; i >= 0; --i) {
-    val = val * z + coeffs[i];
-  }
-  return val;
-}
-
-static double closest_real_root_to_x(const arma::cx_vec& roots,
-                                     double x,
-                                     double real_tol) {
-  bool found = false;
-  double best_root = NA_REAL;
-  double best_dist = std::numeric_limits<double>::infinity();
-  
-  for (arma::uword i = 0; i < roots.n_elem; ++i) {
-    double re = roots[i].real();
-    double im = roots[i].imag();
-    
-    if (std::abs(im) <= real_tol) {
-      if (is_near_singularity(re)) continue;
-      double dist = std::abs(re - x);
-      if (!found || dist < best_dist) {
-        found = true;
-        best_dist = dist;
-        best_root = re;
-      }
-    }
-  }
-  
-  return found ? best_root : NA_REAL;
-}
-
-static double best_real_root_by_poly_value(const arma::cx_vec& roots,
-                                           const arma::vec& coeffs,
-                                           double real_tol) {
-  bool found = false;
-  double best_root = NA_REAL;
-  double best_val = std::numeric_limits<double>::infinity();
-  
-  for (arma::uword i = 0; i < roots.n_elem; ++i) {
-    double re = roots[i].real();
-    double im = roots[i].imag();
-    
-    if (std::abs(im) <= real_tol) {
-      double val = std::abs(eval_poly(coeffs, re));
-      if (!found || val < best_val) {
-        found = true;
-        best_val = val;
-        best_root = re;
-      }
-    }
-  }
-  
-  return found ? best_root : NA_REAL;
-}
-
-// [[Rcpp::export]]
-double bias(double b, NumericVector x_vec, NumericVector par, bool const_term_in_N = false) {
-  int n = x_vec.size();
-  
-  double epsilon = par(0);
-  double y       = par(1);
-  double sigma   = par(2);
-  
-  if (epsilon == 0.0) {
-    Rcpp::stop("epsilon must be nonzero.");
-  }
-  
-  double e2 = epsilon * epsilon;
-  double e3 = e2 * epsilon;
-  
-  double total = 0.0;
-  
-  for (int j = 0; j < n; ++j) {
-    double x = x_vec[j];
-    
-    arma::vec coeffs;
-    
-    if (const_term_in_N) {
-      coeffs.set_size(7);
-      
-      double c0 = (3.0*x*x*y)/(8.0*e3) - (x*x*x)/(3.0*e3) - y/(12.0*e3)
-        - (sigma*sigma*x*x*x)/e2 - (sigma*sigma*x)/(2.0*e2)
-        + (sigma*sigma*y)/(8.0*e2);
-        
-        double c1 = -(x*y)/(4.0*e3) + (3.0*x*x)/(8.0*e3) + 1.0/(12.0*e3)
-          + (x*x*x*x)/(8.0*e3) + (3.0*sigma*sigma)/(8.0*e2);
-        
-        double c2 = (9.0*sigma*sigma*x)/(4.0*e2) + (3.0*x*x*x)/(2.0*e3)
-          + (3.0*y)/(8.0*e3) - x/(4.0*e3) - (9.0*x*x*y)/(8.0*e3);
-        
-        double c3 = (3.0*x*y)/(4.0*e3) - (9.0*x*x)/(4.0*e3) - 3.0/(8.0*e3)
-          - (9.0*sigma*sigma)/(8.0*e2) - (3.0*x*x*x*x)/(8.0*e3);
-        
-        double c4 = -(3.0*x*x*x)/(2.0*e3) + (3.0*x)/(2.0*e3) - (3.0*y)/(8.0*e3);
-        
-        double c5 = (27.0*x*x)/(8.0*e3) + 3.0/(8.0*e3);
-        
-        double c6 = -(9.0*x)/(4.0*e3);
-        
-        coeffs = {c0,c1,c2,c3,c4,c5,c6};
-        
-    } else {
-      coeffs.set_size(8);
-      
-      double c0 = -sigma*sigma*x*x*x/e2 - sigma*sigma*x/(2.0*e2) - x*x*x/(3.0*e3);
-      double c1 = (3.0*x*x)/(4.0*e3) + (x*x*x*x)/(8.0*e3) + sigma*sigma/(2.0*e2);
-      double c2 = (3.0*x*x*x)/(2.0*e3) + (9.0*sigma*sigma*x)/(4.0*e2) - x/(2.0*e3);
-      double c3 = -(15.0*x*x)/(4.0*e3) + 1.0/(12.0*e3) - (5.0*sigma*sigma)/(4.0*e2)
-        - (3.0*x*x*x*x)/(8.0*e3);
-      double c4 = -(3.0*x*x*x)/(2.0*e3) + (5.0*x)/(2.0*e3);
-      double c5 = (9.0*x*x)/(2.0*e3) - 3.0/(8.0*e3);
-      double c6 = -3.0*x/e3;
-      double c7 = 3.0/(8.0*e3);
-      
-      coeffs = {c0,c1,c2,c3,c4,c5,c6,c7};
-    }
-    
-    // --- Direct polynomial evaluation ---
-    double val = 0.0;
-    double b_pow = 1.0;
-    
-    for (unsigned int i = 0; i < coeffs.n_elem; ++i) {
-      val += coeffs[i] * b_pow;
-      b_pow *= b;
-    }
-    
-    total += std::abs(val);
-  }
-  
-  return total / n; // average over x
-}
-// [[Rcpp::export]]
-double minimize_bias(double lower,
-                     double upper,
-                     NumericVector x_vec,
-                     NumericVector par,
-                     bool const_term_in_N = false) {
-  
-  double gr = (std::sqrt(5.0) + 1.0) / 2.0; // golden ratio
-  
-  double c = upper - (upper - lower) / gr;
-  double d = lower + (upper - lower) / gr;
-  
-  double fc = bias(c, x_vec, par, const_term_in_N);
-  double fd = bias(d, x_vec, par, const_term_in_N);
-  
-  const double tol = 1e-6;
-  
-  while (std::abs(upper - lower) > tol) {
-    if (fc < fd) {
-      upper = d;
-      d = c;
-      fd = fc;
-      c = upper - (upper - lower) / gr;
-      fc = bias(c, x_vec, par, const_term_in_N);
-    } else {
-      lower = c;
-      c = d;
-      fc = fd;
-      d = lower + (upper - lower) / gr;
-      fd = bias(d, x_vec, par, const_term_in_N);
-    }
-  }
-  
-  return (lower + upper) / 2.0;
-}
-
-// [[Rcpp::export]]
-double closest_real_root_rcpp(double x, NumericVector par, bool const_term_in_N = false,
-                              double real_tol = 1e-12, double coeff_tol = 1e-12) {
-  double epsilon = par(0);
-  double y       = par(1);
-  double sigma   = par(2);
-  
-  if (epsilon == 0.0) {
-    Rcpp::stop("epsilon must be nonzero.");
-  }
-  
-  double e2 = epsilon * epsilon;
-  double e3 = e2 * epsilon;
-  
-  arma::vec coeffs;
-  
-  if (const_term_in_N) {
-    coeffs.set_size(7);
-    
-    double c0 = (3.0*x*x*y)/(8.0*e3) - (x*x*x)/(3.0*e3) - y/(12.0*e3)
-      - (sigma*sigma*x*x*x)/e2 - (sigma*sigma*x)/(2.0*e2)
-      + (sigma*sigma*y)/(8.0*e2);
-      
-      double c1 = -(x*y)/(4.0*e3) + (3.0*x*x)/(8.0*e3) + 1.0/(12.0*e3)
-        + (x*x*x*x)/(8.0*e3) + (3.0*sigma*sigma)/(8.0*e2);
-      
-      double c2 = (9.0*sigma*sigma*x)/(4.0*e2) + (3.0*x*x*x)/(2.0*e3)
-        + (3.0*y)/(8.0*e3) - x/(4.0*e3) - (9.0*x*x*y)/(8.0*e3);
-      
-      double c3 = (3.0*x*y)/(4.0*e3) - (9.0*x*x)/(4.0*e3) - 3.0/(8.0*e3)
-        - (9.0*sigma*sigma)/(8.0*e2) - (3.0*x*x*x*x)/(8.0*e3);
-      
-      double c4 = -(3.0*x*x*x)/(2.0*e3) + (3.0*x)/(2.0*e3) - (3.0*y)/(8.0*e3);
-      
-      double c5 = (27.0*x*x)/(8.0*e3) + 3.0/(8.0*e3);
-      
-      double c6 = -(9.0*x)/(4.0*e3);
-      
-      coeffs[0] = c0;
-      coeffs[1] = c1;
-      coeffs[2] = c2;
-      coeffs[3] = c3;
-      coeffs[4] = c4;
-      coeffs[5] = c5;
-      coeffs[6] = c6;
-  } else {
-    coeffs.set_size(8);
-    
-    double c0 = -sigma*sigma*x*x*x/e2 - sigma*sigma*x/(2.0*e2) - x*x*x/(3.0*e3);
-    double c1 = (3.0*x*x)/(4.0*e3) + (x*x*x*x)/(8.0*e3) + sigma*sigma/(2.0*e2);
-    double c2 = (3.0*x*x*x)/(2.0*e3) + (9.0*sigma*sigma*x)/(4.0*e2) - x/(2.0*e3);
-    double c3 = -(15.0*x*x)/(4.0*e3) + 1.0/(12.0*e3) - (5.0*sigma*sigma)/(4.0*e2)
-      - (3.0*x*x*x*x)/(8.0*e3);
-    double c4 = -(3.0*x*x*x)/(2.0*e3) + (5.0*x)/(2.0*e3);
-    double c5 = (9.0*x*x)/(2.0*e3) - 3.0/(8.0*e3);
-    double c6 = -3.0*x/e3;
-    double c7 = 3.0/(8.0*e3);
-    
-    coeffs[0] = c0;
-    coeffs[1] = c1;
-    coeffs[2] = c2;
-    coeffs[3] = c3;
-    coeffs[4] = c4;
-    coeffs[5] = c5;
-    coeffs[6] = c6;
-    coeffs[7] = c7;
-  }
-  
-  arma::cx_vec roots = poly_roots_companion(coeffs, coeff_tol);
-  
-  if (roots.n_elem == 0) {
-    Rcpp::warning("Polynomial degenerated to constant; no roots.");
-    return NA_REAL;
-  }
-  
-  // First try: actual real roots of the polynomial, closest to x
-  double root = closest_real_root_to_x(roots, x, real_tol);
-  if (std::isfinite(root)) {
-    return root;
-  }
-  
-  // Fallback: derivative polynomial
-  if (coeffs.n_elem < 2) {
-    Rcpp::warning("Polynomial degree too small for derivative fallback.");
-    return NA_REAL;
-  }
-  
-  arma::vec dcoeffs(coeffs.n_elem - 1);
-  for (arma::uword i = 1; i < coeffs.n_elem; ++i) {
-    dcoeffs[i - 1] = static_cast<double>(i) * coeffs[i];
-  }
-  
-  arma::cx_vec droots = poly_roots_companion(dcoeffs, coeff_tol);
-  
-  // Choose derivative root minimizing |p(b)|
-  double best_b = best_real_root_by_poly_value(droots, coeffs, real_tol);
-  if (std::isfinite(best_b)) {
-    return best_b;
-  }
-  
-  Rcpp::warning("No suitable real root found for polynomial or its derivative.");
-  return NA_REAL;
-}
-
-// [[Rcpp::export]]
-static std::vector<double> cubic_realroots_sorted(double a3, double a2, double a1, double a0) {
-  // Build coefficient vector in R order: constant → highest degree
-  Rcpp::NumericVector coeffs = Rcpp::NumericVector::create(a0, a1, a2, a3);
-  
-  // Call R's polyroot
-  Rcpp::Function polyroot("polyroot");
-  Rcpp::ComplexVector roots = polyroot(coeffs);
-  
-  // Extract real parts
-  std::vector<double> re;
-  re.reserve(roots.size());
-  
-  for (int i = 0; i < roots.size(); ++i) {
-    Rcomplex z = roots[i];
-    
-    // Keep only (near-)real roots
-    if (std::abs(z.i) < 1e-12) {
-      re.push_back(z.r);
-    }
-  }
-  
-  // If fewer than 3 real roots, still return sorted available ones
-  std::sort(re.begin(), re.end());
-  
-  return re;
-}
 
 // A(par, center, part) -> scalar
 static double A_cpp_scalar(NumericVector par, double b) {
@@ -372,6 +27,7 @@ static double N(double x, const arma::vec &par, double b, bool const_term_in_N) 
 }
 
 // single-step RK4 for fh (scalar ODE)
+// [[Rcpp::export]]
 static double fh_scalar(double x, double h, const arma::vec &par, double b,bool const_term_in_N) {
   double k1 = N(x, par,b, const_term_in_N);
   double k2 = N(x + 0.5 * h * k1, par,b, const_term_in_N);
@@ -382,6 +38,7 @@ static double fh_scalar(double x, double h, const arma::vec &par, double b,bool 
 }
 
 // mu scalar
+// [[Rcpp::export]]
 static double mu_scalar(double x, double h, NumericVector par, double b ,bool const_term_in_N) {
   double A = A_cpp_scalar(par, b);
   double M = std::exp(A * h);
@@ -394,10 +51,10 @@ static double mu_scalar(double x, double h, NumericVector par, double b ,bool co
     return M * x + (1.0 - M) * b_tilde;
   }
 }
-
+// [[Rcpp::export]]
 static double Omega_scalar(double h, NumericVector par, double b) {
   double a = A_cpp_scalar(par, b);
-  double sigma12 = par(2);
+  double sigma12 = par(2)*par(2);
   double val = (-sigma12 / (2.0 * a)) * (1.0 - std::exp(2.0 * a * h));
   return val;
 }
@@ -425,10 +82,21 @@ double jacobian_fh_scalar_rcpp(double x, double h,
   double f2m = fh_scalar(x - h2, h, par, b, const_term_in_N);
   double D2 = (f2p - f2m) / (2.0 * h2);
   
-  // ---- Richardson extrapolation
-  // Cancels O(h^2) error → O(h^4)
   double D = (4.0 * D2 - D1) / 3.0;
   return D;
+}
+// [[Rcpp::export]]
+NumericVector sigma_MLE(NumericVector Z, NumericVector A, const NumericVector &times_r) {
+  int n = Z.size();
+  NumericVector result(n);
+  double h = times_r[1] - times_r[0];
+  
+  for (int i = 0; i < n; i++) {
+    result[i] = (2.0 * Z[i] * Z[i] * A[i]) /
+      (std::exp(2.0 * A[i] * h) - 1.0);
+  }
+  
+  return result;
 }
 
 // [[Rcpp::export]]
@@ -437,7 +105,7 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
                              const NumericVector &theta_drift,
                              const NumericVector &theta_diffusion,
                              Rcpp::RObject method,
-                             double bias_b) {
+                             const NumericVector &b_vec, double uns_fix) {
   
   int nd = theta_drift.size();
   if (nd < 2) stop("theta_drift must have at least 2 elements.");
@@ -462,48 +130,71 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
   
   std::string method_str = as<std::string>(method);
   
-  std::vector<double> Z(L);
-  std::vector<double> B(L);
+  std::vector<double> Z_list(L);
+  std::vector<double> b_list(L);
+  std::vector<double> A_list(L);
+
   
-  double sum_sigma = 0.0;
-  
-  // ===================== FIX =====================
-  if (method_str == "fix") {
+  // ===================== one b =====================
+  if (method_str == "avg bias" || method_str == "godambe"|| method_str == "average N") {
     
-    std::vector<double> roots = cubic_realroots_sorted(-1.0, 0.0, 1.0, -y);
-    if (roots.size() == 1) {
-      roots = std::vector<double>(3, roots[0]);
-    }
+    bool const_term_in_N = false;
+    double use_b =b_vec[0];
+    double Omega  = Omega_scalar(h, par, use_b);
     
-    double root_left  = roots.front();
-    double root_mid   = roots[1];
-    double root_right = roots.back();
+    double inv_Omega  = 1.0 / std::abs(Omega);
+    
+    double log_Omega  = std::log(std::abs(Omega));
+    
+    double sum_logD = 0.0;
+    double sum_quad = 0.0;
+    double sum_logOmega = 0.0;
     
     for (int i = 0; i < L; i++) {
       double x_old = data_old(i);
       double x_new = data_new(i);
       
-      bool cond = (x_old > root_mid);
-      double use_b = cond ? root_right : root_left;
-      B[i] = cond ? 1.0 : 0.0;
-      
-      double tmp = fh_scalar(x_old, h / 2.0, par, use_b, false);
-      double z = fh_scalar(x_new, -h / 2.0, par, use_b, false) - 
-        mu_scalar(tmp, h, par, use_b, false);
-      
-      Z[i] = z;
+      double tmp = fh_scalar(x_old, h / 2.0, par, use_b, const_term_in_N);
+      double z = fh_scalar(x_new, -h / 2.0, par, use_b, const_term_in_N) - 
+        mu_scalar(tmp, h, par, use_b, const_term_in_N);
+      Z_list[i] = z;
       
       double A = A_cpp_scalar(par, use_b);
-      double denom = std::exp(2 * A * h) - 1.0;
-      if (std::abs(denom) < 1e-12) denom = 1e-12;
+      A_list[i] = A;
       
-      sum_sigma += (2.0 * z * z * A) / denom;
+      double D = jacobian_fh_scalar_rcpp(x_new, -h / 2.0, par, use_b, const_term_in_N);
+      if (std::abs(D) < 1e-12) D = (D >= 0 ? 1e-12 : -1e-12);
+      
+      sum_logD += std::log(std::abs(D));
+      
+
+      sum_quad += z * inv_Omega * z;
+      sum_logOmega += log_Omega;
+  
     }
     
-    // par(2) = sum_sigma / L;
+    double ll = sum_logOmega + sum_quad - 2.0 * sum_logD;
+    return List::create(
+      Named("ll") = ll,
+      Named("A_list") = A_list,
+      Named("Z_list") = Z_list
+    );
+  }
+  // ===================== two b's =====================
+  else if (method_str == "fix" || method_str == "fix penalized" || method_str == "negative fix" || method_str == "MLE splitting" || method_str == "theoretical bias (taylor)"|| method_str == "empirical bias (first-order)" || method_str == "theoretical bias (first-order)") {
     
-    double Omega_left  = Omega_scalar(h, par, root_left);
-    double Omega_right = Omega_scalar(h, par, root_right);
+    bool const_term_in_N;
+    if (method_str == "fix" || method_str == "fix penalized" || method_str == "MLE splitting"  || method_str == "theoretical bias (taylor)"){
+      const_term_in_N = false;
+    }else if (method_str == "empirical bias (first-order)" || method_str == "theoretical bias (first-order)"){
+      const_term_in_N = true;
+    }
+    double left_b  = b_vec[0];
+    double right_b = b_vec[1];
+    
+    
+    double Omega_left  = Omega_scalar(h, par, left_b);
+    double Omega_right = Omega_scalar(h, par, right_b);
     
     double inv_left  = 1.0 / std::abs(Omega_left);
     double inv_right = 1.0 / std::abs(Omega_right);
@@ -514,15 +205,29 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
     double sum_logD = 0.0;
     double sum_quad = 0.0;
     double sum_logOmega = 0.0;
-    
+
     for (int i = 0; i < L; i++) {
+      double x_old = data_old(i);
       double x_new = data_new(i);
-      double z = Z[i];
-      bool cond = (B[i] > 0.5);
       
-      double use_b = cond ? root_right : root_left;
+      bool cond = (x_old > uns_fix);
+      double use_b = cond ? right_b : left_b;
+
+      double tmp = fh_scalar(x_old, h / 2.0, par, use_b, const_term_in_N);
+      double z = fh_scalar(x_new, -h / 2.0, par, use_b, const_term_in_N) - 
+        mu_scalar(tmp, h, par, use_b, const_term_in_N);
       
-      double D = jacobian_fh_scalar_rcpp(x_new, -h / 2.0, par, use_b, false);
+      Z_list[i] = z;
+      
+      double A = A_cpp_scalar(par, use_b);
+      A_list[i] = A;
+      // double denom = std::exp(2 * A * h) - 1.0;
+      // if (std::abs(denom) < 1e-12) denom = 1e-12;
+      // 
+      // sum_sigma += (2.0 * z * z * A) / denom;
+   
+
+      double D = jacobian_fh_scalar_rcpp(x_new, -h / 2.0, par, use_b, const_term_in_N);
       if (std::abs(D) < 1e-12) D = (D >= 0 ? 1e-12 : -1e-12);
       
       sum_logD += std::log(std::abs(D));
@@ -540,101 +245,103 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
     
     return List::create(
       Named("ll") = ll,
-      Named("sigma") = std::sqrt(par(2))
+      Named("A_list") = A_list,
+      Named("Z_list") = Z_list
     );
   }
+  // three b's
+  else if (method_str == "zero" || method_str == "uns" ) {
+    
 
-  else if (method_str == "avg bias") {
+    bool const_term_in_N = false;
+
+    double left_b  = b_vec[0];
+    double middle_b = b_vec[1];
+    double right_b = b_vec[2];
     
     
-    for (int i = 0; i < L; i++) {
-      double x_old = data_old(i);
-      double x_new = data_new(i);
-      
-      double tmp = fh_scalar(x_old, h / 2.0, par, bias_b, false);
-      double z = fh_scalar(x_new, -h / 2.0, par, bias_b, false) - 
-        mu_scalar(tmp, h, par, bias_b, false);
-      
-      Z[i] = z;
-      
-      double A = A_cpp_scalar(par, bias_b);
-      double denom = std::exp(2 * A * h) - 1.0;
-      if (std::abs(denom) < 1e-12) denom = 1e-12;
-      
-      sum_sigma += (2.0 * z * z * A) / denom;
-    }
+    double Omega_left  = Omega_scalar(h, par, left_b);
+    double Omega_middle  = Omega_scalar(h, par, middle_b);
+    double Omega_right = Omega_scalar(h, par, right_b);
     
-    // par(2) = sum_sigma / L;
+    double inv_left  = 1.0 / std::abs(Omega_left);
+    double inv_middle  = 1.0 / std::abs(Omega_middle);
+    double inv_right = 1.0 / std::abs(Omega_right);
     
-    double Omega  = Omega_scalar(h, par, bias_b);
-
-    double inv_Omega  = 1.0 / std::abs(Omega);
-
-    double log_Omega  = std::log(std::abs(Omega));
-
+    double log_left  = std::log(std::abs(Omega_left));
+    double log_middle  = std::log(std::abs(Omega_middle));
+    double log_right = std::log(std::abs(Omega_right));
+    
     double sum_logD = 0.0;
     double sum_quad = 0.0;
     double sum_logOmega = 0.0;
     
     for (int i = 0; i < L; i++) {
+      double x_old = data_old(i);
       double x_new = data_new(i);
-      double z = Z[i];
-      bool cond = (B[i] > 0.5);
       
-      double D = jacobian_fh_scalar_rcpp(x_new, -h / 2.0, par, bias_b, false);
+      bool cond1 = (x_old > 1/std::sqrt(3.0)-0.25);
+      bool cond2 = (x_old < -1/std::sqrt(3.0)+0.25);
+      double use_b = cond1 ? right_b : (cond2 ? left_b : middle_b);
+      
+      double tmp = fh_scalar(x_old, h / 2.0, par, use_b, const_term_in_N);
+      double z = fh_scalar(x_new, -h / 2.0, par, use_b, const_term_in_N) - 
+        mu_scalar(tmp, h, par, use_b, const_term_in_N);
+      
+      Z_list[i] = z;
+      
+      double A = A_cpp_scalar(par, use_b);
+      A_list[i] = A;
+      // double denom = std::exp(2 * A * h) - 1.0;
+      // if (std::abs(denom) < 1e-12) denom = 1e-12;
+      // 
+      // sum_sigma += (2.0 * z * z * A) / denom;
+      
+      
+      double D = jacobian_fh_scalar_rcpp(x_new, -h / 2.0, par, use_b, const_term_in_N);
       if (std::abs(D) < 1e-12) D = (D >= 0 ? 1e-12 : -1e-12);
       
       sum_logD += std::log(std::abs(D));
       
-
-      sum_quad += z * inv_Omega * z;
-      sum_logOmega += log_Omega;
-  
+      if (cond1) {
+        sum_quad += z * inv_right * z;
+        sum_logOmega += log_right;
+      } else if (cond2) {
+        sum_quad += z * inv_left * z;
+        sum_logOmega += log_left;
+      } else {
+        sum_quad += z * inv_middle * z;
+        sum_logOmega += log_middle;
+      }
     }
     
     double ll = sum_logOmega + sum_quad - 2.0 * sum_logD;
     
     return List::create(
       Named("ll") = ll,
-      Named("sigma") = std::sqrt(par(2)),
-      Named("used b") = bias_b
+      Named("A_list") = A_list,
+      Named("Z_list") = Z_list
     );
   }
-
-  else if (method_str == "optimal bias") {
-    
+  // ===================== multiple b's =====================
+  else if (method_str == "OU expectation x" || method_str == "OU expectation b" || method_str == "OU expectation x test" || method_str == "OU expectation b test"|| method_str == "One-step expectation"|| method_str == "One-step expectation test") {
+    double sum_logD = 0.0;
+    double sum_quad = 0.0;
+    double sum_logOmega = 0.0;
     bool const_term_in_N = false;
-    
     for (int i = 0; i < L; i++) {
       double x_old = data_old(i);
       double x_new = data_new(i);
       
-      double use_b = closest_real_root_rcpp(x_old, par, const_term_in_N);
-      B[i] = use_b;
-      
+      //double use_b = closest_real_root_rcpp(x_old, par, const_term_in_N);
+      double use_b = b_vec[i];
       double tmp = fh_scalar(x_old, h / 2.0, par, use_b, const_term_in_N);
       double z = fh_scalar(x_new, -h / 2.0, par, use_b, const_term_in_N) - 
         mu_scalar(tmp, h, par, use_b, const_term_in_N);
-      
-      Z[i] = z;
+      Z_list[i] = z;
       
       double A = A_cpp_scalar(par, use_b);
-      double denom = std::exp(2 * A * h) - 1.0;
-      if (std::abs(denom) < 1e-12) denom = 1e-12;
-      
-      sum_sigma += (2.0 * z * z * A) / denom;
-    }
-    
-    // par(2) = sum_sigma / L;
-    
-    double sum_logD = 0.0;
-    double sum_quad = 0.0;
-    double sum_logOmega = 0.0;
-    
-    for (int i = 0; i < L; i++) {
-      double x_new = data_new(i);
-      double z = Z[i];
-      double use_b = B[i];
+      A_list[i] = A;
       
       double Omega = Omega_scalar(h, par, use_b);
       double absOmega = std::abs(Omega);
@@ -652,12 +359,10 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
     
     return List::create(
       Named("ll") = ll,
-      Named("sigma") = std::sqrt(par(2)),
-      Named("used_bs") = B
+      Named("A_list") = A_list,
+      Named("Z_list") = Z_list
     );
   }
-  
-  // ===================== FALLBACK =====================
   else {
     stop("Unknown method in log_lik_path_rcpp");
   }

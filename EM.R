@@ -39,7 +39,7 @@ EM_step <- function(F, G, x0, times, n=1000,progress=FALSE) {
   endpoints <- matrix(NA, n, d)  # store n endpoints
   
   for (i in 1:n) {
-    path <- EM_sim(F, G, x0, times, n_paths=1,progress=progress)[[1]]  # EM_sim returns a list
+    path <- EM_sim_fast(F, G, x0, times, n_paths=1,progress=progress)[[1]]  # EM_sim returns a list
     endpoints[i, ] <- as.numeric(path[nrow(path), ]) # last row = endpoint
   }
   
@@ -71,7 +71,6 @@ EM_sim_fast <- function(F, G, x0, times, n_paths = 1, progress = FALSE) {
     if (progress) setTxtProgressBar(pb, j)
   }
   
-  # create default column names X1...Xd if user didn't supply
   new_names <- paste0("X", seq_len(d))
   
   df_list <- lapply(seq_len(n_paths), function(j) {

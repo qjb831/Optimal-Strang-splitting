@@ -6,206 +6,10 @@ using namespace Rcpp;
 using arma::mat;
 using arma::vec;
 
-// Helper: cube root
 inline double cube_root(double x) {
   if (x == 0.0) return 0.0;
   return (x > 0.0 ? 1.0 : -1.0) * std::pow(std::abs(x), 1.0/3.0);
 }
-
-// e.g. coeffs = {a3, a2, a1, a0} for a3*x^3 + a2*x^2 + a1*x + a0 = 0
-// [[Rcpp::export]]
-static arma::cx_vec poly_roots_arma(const std::vector<double>& coeffs, double tol = 1e-14) {
-  size_t n = coeffs.size();
-  // remove leading zeros (degenerate polynomial)
-  size_t first = 0;
-  while (first < n && std::abs(coeffs[first]) <= tol) ++first;
-  if (first >= n) {
-    // zero polynomial -> no roots; return empty vector
-    return arma::cx_vec();
-  }
-  
-  size_t deg = n - first - 1; // degree = number of coefficients - 1
-  // remaining coefficients
-  std::vector<double> c;
-  for (size_t i = first; i < n; ++i) c.push_back(coeffs[i]);
-  // degree:
-  deg = c.size() - 1;
-  
-  if (deg == 0) {
-    // constant: no roots
-    return arma::cx_vec();
-  } else if (deg == 1) {
-    // linear: a1*x + a0 = 0 -> x = -a0/a1
-    arma::cx_vec out(1);
-    out(0) = std::complex<double>(-c[1] / c[0], 0.0);
-    return out;
-  } else {
-    // create companion matrix for monic polynomial
-    // first make monic by dividing by leading coeff
-    double lead = c[0];
-    arma::cx_mat C(deg, deg, arma::fill::zeros);
-    // coefficients for monic: x^deg + a_{deg-1} x^{deg-1} + ... + a0
-    std::vector<double> mono(deg + 1);
-    for (size_t i = 0; i <= deg; ++i) mono[i] = c[i] / lead;
-    
-    // first row: -a_{deg-1}, -a_{deg-2}, ..., -a0
-    for (size_t j = 0; j < deg; ++j) {
-      C(0, j) = -mono[1 + j];
-    }
-    // subdiagonal ones
-    for (size_t i = 1; i < deg; ++i) {
-      C(i, i - 1) = 1.0;
-    }
-    
-    arma::cx_vec eigvals;
-    bool ok = arma::eig_gen(eigvals, C);
-    // If eig_gen fails (rare), return empty vector
-    if (!ok) return arma::cx_vec();
-    return eigvals;
-  }
-}
-
-// [[Rcpp::export]]
-List find_b_intersections_arma(NumericVector x0, NumericVector par, double imag_tol = 1e-8) {
-  if (x0.size() < 2 || par.size() < 4) stop("x0 must have 2 elements and par at least 4 elements.");
-  
-  double x_val = x0[0];
-  double y_val = x0[1];
-  double eps   = par[0]; // unused here but kept for compatibility
-  double alpha = par[1];
-  double gamma = par[2];
-  double beta  = par[3];
-  
-  std::vector<double> coeffs1 = { -1, 0.0, 1.0, alpha - y_val };
-  arma::cx_vec roots1 = poly_roots_arma(coeffs1);
-  
-  std::vector<double> real_roots1;
-  if (roots1.n_elem > 0) {
-    for (size_t i = 0; i < roots1.n_elem; ++i) {
-      std::complex<double> r = roots1(i);
-      if (std::abs(r.imag()) < imag_tol) real_roots1.push_back(r.real());
-    }
-    // fallback: use real parts if none considered real
-    if (real_roots1.empty()) {
-      for (size_t i = 0; i < roots1.n_elem; ++i) real_roots1.push_back(roots1(i).real());
-    }
-  } else {
-    // defensive fallback (shouldn't happen): treat as empty
-    stop("Failed to compute roots of the cubic for x_tilde.");
-  }
-  
-  double t1 = -std::pow(1.0/std::sqrt(3.0), 3) + 1.0/std::sqrt(3.0) + alpha;
-  double t2 = -(-std::pow(1.0/std::sqrt(3.0), 3)) - 1.0/std::sqrt(3.0) + alpha;
-  
-  double x_tilde;
-  if (y_val > t1) {
-    x_tilde = *std::min_element(real_roots1.begin(), real_roots1.end());
-  } else if (y_val < t2) {
-    x_tilde = *std::max_element(real_roots1.begin(), real_roots1.end());
-  } else {
-    // choose root closest to x_val
-    auto it = std::min_element(
-      real_roots1.begin(), real_roots1.end(),
-      [x_val](double a, double b) {
-        return std::abs(a - x_val) < std::abs(b - x_val);
-      }
-    );
-    x_tilde = *it;
-  }
-  
-  // --- form cubic from poly_val1 == poly_val2 and solve for bs
-  // from earlier derivation:
-  // 3*bs^3 - 3*x_val*bs^2 + (gamma - 1)*bs + ( x_val - y_val + beta - gamma*(x_val - x_tilde) ) = 0
-  std::vector<double> coeffs_bs = {
-    3.0,
-    -3.0 * x_val,
-    gamma - 1.0,
-    x_val - y_val + beta - gamma * (x_val - x_tilde)
-  };
-  
-  arma::cx_vec bs_roots = poly_roots_arma(coeffs_bs);
-  
-  // filter real solutions
-  std::vector<double> bs_real;
-  if (bs_roots.n_elem > 0) {
-    for (size_t i = 0; i < bs_roots.n_elem; ++i) {
-      std::complex<double> r = bs_roots(i);
-      if (std::abs(r.imag()) < imag_tol) bs_real.push_back(r.real());
-    }
-    if (bs_real.empty()) {
-      // fallback: use real parts
-      for (size_t i = 0; i < bs_roots.n_elem; ++i) bs_real.push_back(bs_roots(i).real());
-    }
-  }
-  
-  std::sort(bs_real.begin(), bs_real.end());
-  NumericVector b_roots(bs_real.begin(), bs_real.end());
-  
-  // also return the complex roots as an R complex vector for debugging / completeness
-  Rcpp::ComplexVector all_bs_complex(bs_roots.n_elem);
-  for (size_t i = 0; i < (size_t)bs_roots.n_elem; ++i) {
-    all_bs_complex[i] = Rcomplex{bs_roots(i).real(), bs_roots(i).imag()};
-  }
-  
-  return List::create(
-    Named("x_tilde") = x_tilde,
-    Named("b_roots") = b_roots,
-    Named("all_bs_roots_complex") = all_bs_complex
-  );
-}
-
-// [[Rcpp::export]]
-List find_x_tilde(NumericVector x0, NumericVector par, double imag_tol = 1e-8) {
-  if (x0.size() < 2 || par.size() < 4) stop("x0 must have 2 elements and par at least 4 elements.");
-  
-  double x_val = x0[0];
-  double y_val = x0[1];
-  double eps   = par[0]; // unused here but kept for compatibility
-  double alpha = par[1];
-  double gamma = par[2];
-  double beta  = par[3];
-  
-  std::vector<double> coeffs1 = { -1, 0.0, 1.0, alpha - y_val };
-  arma::cx_vec roots1 = poly_roots_arma(coeffs1);
-  
-  std::vector<double> real_roots1;
-  if (roots1.n_elem > 0) {
-    for (size_t i = 0; i < roots1.n_elem; ++i) {
-      std::complex<double> r = roots1(i);
-      if (std::abs(r.imag()) < imag_tol) real_roots1.push_back(r.real());
-    }
-    // fallback: use real parts if none considered real
-    if (real_roots1.empty()) {
-      for (size_t i = 0; i < roots1.n_elem; ++i) real_roots1.push_back(roots1(i).real());
-    }
-  } else {
-    // defensive fallback (shouldn't happen): treat as empty
-    stop("Failed to compute roots of the cubic for x_tilde.");
-  }
-  
-  double t1 = -std::pow(1.0/std::sqrt(3.0), 3) + 1.0/std::sqrt(3.0) + alpha;
-  double t2 = -(-std::pow(1.0/std::sqrt(3.0), 3)) - 1.0/std::sqrt(3.0) + alpha;
-  
-  double x_tilde;
-  if (y_val > t1) {
-    x_tilde = *std::min_element(real_roots1.begin(), real_roots1.end());
-  } else if (y_val < t2) {
-    x_tilde = *std::max_element(real_roots1.begin(), real_roots1.end());
-  } else {
-    // choose root closest to x_val
-    auto it = std::min_element(
-      real_roots1.begin(), real_roots1.end(),
-      [x_val](double a, double b) {
-        return std::abs(a - x_val) < std::abs(b - x_val);
-      }
-    );
-    x_tilde = *it;
-  }
-  return List::create(
-    Named("x_tilde") = x_tilde
-  );
-}
-
 // [[Rcpp::export]]
 NumericVector fixed_point_rcpp(NumericVector par){
   if (par.size() < 4) stop("par length < 4 in fixed_point_rcpp");
@@ -236,7 +40,14 @@ arma::mat A_rcpp(NumericVector par, NumericVector center, const std::string &met
   double beta  = par[3];
   
   arma::mat A_mat(2,2);
-  if (method == "fix" || method == "piecewise" || method == "custom"|| method == "fast-slow" || method == "fast"|| method == "test") {
+  if (method == "buckwar") {
+    double c1 = 0.0;
+    double c2 = -1.0/eps;
+    double c3 = gamma;
+    double c4 = -1.0;
+    A_mat(0,0) = c1; A_mat(0,1) = c2;
+    A_mat(1,0) = c3; A_mat(1,1) = c4;
+  } else {
     double b1 = center[0];
     double c1 = 1.0/eps - 3.0/eps * b1*b1;
     double c2 = -1.0/eps;
@@ -245,16 +56,7 @@ arma::mat A_rcpp(NumericVector par, NumericVector center, const std::string &met
     A_mat(0,0) = c1; A_mat(0,1) = c2;
     A_mat(1,0) = c3; A_mat(1,1) = c4;
     
-  } else if (method == "buckwar") {
-    double c1 = 0.0;
-    double c2 = -1.0/eps;
-    double c3 = gamma;
-    double c4 = -1.0;
-    A_mat(0,0) = c1; A_mat(0,1) = c2;
-    A_mat(1,0) = c3; A_mat(1,1) = c4;
-  } else {
-    stop("Unknown method in A_rcpp");
-  }
+  } 
   return A_mat;
 }
 
@@ -328,52 +130,23 @@ NumericVector mu_rcpp(NumericVector x, double h, NumericVector par, NumericVecto
   
   arma::mat A_mat = A_rcpp(par, center, method);
   arma::mat M = arma::expmat(A_mat * h);
-  arma::mat I = arma::eye<arma::mat>(2,2);
-  
+
   arma::vec x_vec = as<arma::vec>(x);
   arma::vec b = as<arma::vec>(center);
   if (method == "test" || method == "custom") {  
-    
-    
+
     arma::vec Fb(2);
     Fb(0) = (b(0) - std::pow(b(0),3) + alpha - b(1)) / eps;
     Fb(1) = gamma * b(0) + beta - b(1);
     
-    arma::vec correction;
-    double detA = (-1 + 3*b(0)*b(0) + gamma) / eps;
-    
-    if (std::abs(detA) < 1e-10) {
- 
-      // fallback: single regularized solve
-      double lambda = 1e-6;
-      arma::mat A_reg = A_mat + lambda * arma::eye(A_mat.n_rows,A_mat.n_cols);
-      
-      bool ok = arma::solve(correction, A_reg, Fb, arma::solve_opts::no_approx);
-      
-      if (!ok || !correction.is_finite()) {
-        stop("Newton step failed even after regularization");
-      }
-        
-      
-    } else {
-      arma::mat A_inv(2,2);
-      
-      A_inv(0,0) = -1;
-      A_inv(0,1) = 1.0/eps;
-      A_inv(1,0) = -gamma;
-      A_inv(1,1) = (1.0 - 3*b(0)*b(0))/eps;
-      
-      A_inv /= detA;
-      
-      correction = A_inv * Fb;
-    }
-    
-    arma::vec b_tilde = b - correction;
+    arma::mat A_inv = arma::inv(A_mat);
+
+    arma::vec b_tilde = b - A_inv * Fb;
     arma::vec res = M * x_vec + (arma::eye<arma::mat>(2,2) - M) * b_tilde;
     
     return NumericVector::create(res(0), res(1));
   }else{
-    arma::vec res = M * x_vec + (I - M) * b;
+    arma::vec res = M * x_vec + (arma::eye<arma::mat>(2,2) - M) * b;
     return NumericVector::create(res(0), res(1));
   }
 }
@@ -427,7 +200,7 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
                          NumericVector theta_drift,
                          NumericVector theta_diffusion,
                          const std::string &method,
-                         NumericVector custom_b) {
+                         const List &b_vec) {
   // combine parameters: theta_drift then theta_diffusion
   int nd = theta_drift.size();
   int ns = theta_diffusion.size();
@@ -450,15 +223,11 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
   arma::mat Inv_Omega;
   double signO = 0.0, logdetO = 0.0;
   
-  if (method == "fix" || method == "buckwar"|| method == "custom") {
+  if (method == "fix" || method == "buckwar") {
     // choose center
-    if (method == "fix"){
-      center = fixed_point_rcpp(par);
-    } else if (method == "buckwar"){ 
-      center = NumericVector::create(0.0, 0.0);
-    } else if (method == "custom") { // buckwar
-      center = custom_b;
-    }
+
+    center = b_vec[0];
+
     Omega_mat = Omega_rcpp(h, par, center, method);
     Inv_Omega = arma::inv(Omega_mat); 
     arma::log_det(logdetO, signO, Omega_mat); 
@@ -495,26 +264,29 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
         [cur_par, cur_center, cur_method, h](NumericVector xx) -> NumericVector {
           return fh_rcpp(xx, -h/2.0, cur_par, cur_center, cur_method);
         };
-        arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
-        
-        double sigD=0.0, logdetD = 0.0;
-        arma::log_det(logdetD, sigD, D);
-        
-        sum_log_det_Omega += logdetO;
-        sum_quad += quad;
-        sum_log_det_D += logdetD;
+      arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
+      
+      double sigD=0.0, logdetD = 0.0;
+      arma::log_det(logdetD, sigD, D);
+      
+      sum_log_det_Omega += logdetO;
+      sum_quad += quad;
+      sum_log_det_D += logdetD;
     }
     
     loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
     return List::create(
-        Named("ll") = loglik,
-        Named("Z") = Z
+        Named("ll") = loglik
     );
-  } else if (method == "piecewise") {
+  } 
+  // Three b's
+  else if (method == "piecewise") {
     double alpha = par[1];
-    NumericVector b_left  = NumericVector::create(-1.0, alpha);
-    NumericVector b_middle= NumericVector::create( 0.0, alpha);
-    NumericVector b_right = NumericVector::create( 1.0, alpha);
+    const List& b_list = b_vec;
+    
+    const NumericVector b_left   = b_list[0];
+    const NumericVector b_middle = b_list[1];
+    const NumericVector b_right  = b_list[2];
     
     // compute Omegas and inverses for each part
     arma::mat Omega_left  = Omega_rcpp(h, par, b_left, "piecewise");
@@ -544,26 +316,26 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
       bool cond_left  = (xold1 < left_knee);
       bool cond_right = (xold1 >  right_knee);
       
-      NumericVector used_b;
+      const NumericVector* used_b;
       arma::mat *used_Inv;
       double used_logdet;
       if (cond_left) {
-        used_b = b_left;
+        used_b  = &b_left;
         used_Inv = &Inv_left;
         used_logdet = logdet_left;
       } else if (cond_right) {
-        used_b = b_right;
+        used_b =  &b_right;
         used_Inv = &Inv_right;
         used_logdet = logdet_right;
       } else {
-        used_b = b_middle;
+        used_b = &b_middle;
         used_Inv = &Inv_mid;
         used_logdet = logdet_mid;
       }
       
-      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, used_b, "piecewise");
-      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, used_b, "piecewise");
-      NumericVector mu_f = mu_rcpp(tmp, h, par, used_b, "piecewise");
+      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, *used_b, "piecewise");
+      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, *used_b, "piecewise");
+      NumericVector mu_f = mu_rcpp(tmp, h, par, *used_b, "piecewise");
       
       arma::vec z(2);
       z(0) = finv[0] - mu_f[0];
@@ -572,7 +344,7 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
       arma::vec temp = (*used_Inv) * z;
       double quad = arma::dot(z, temp);
       
-      NumericVector cur_center = used_b;
+      NumericVector cur_center = *used_b;
       NumericVector cur_par = par;
       std::function<NumericVector(NumericVector)> fh_wrapper =
         [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
@@ -589,14 +361,16 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
     
     
     loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
-  } else if (method == "new_piecewise") {
+    return List::create(Named("ll") = loglik);
+  } 
+  // Four b's 
+  else if (method == "new_piecewise") {
     double alpha = par[1];
-      
-    NumericVector b_left  = NumericVector::create(-1, alpha);
-    NumericVector b_upper= NumericVector::create( -1/std::sqrt(3), 2/(3*std::sqrt(3))+alpha);
-    NumericVector b_lower= NumericVector::create( 1/std::sqrt(3), -2/(3*std::sqrt(3))+alpha);
-    NumericVector b_right = NumericVector::create(1, alpha);
+    const List& b_list = b_vec;
+    NumericVector b_left  = b_vec[0];
+    NumericVector b_upper= b_vec[1];
+    NumericVector b_lower= b_vec[2];
+    NumericVector b_right = b_vec[3];
     
     // compute Omegas and inverses for each part
     arma::mat Omega_left  = Omega_rcpp(h, par, b_left, "piecewise");
@@ -632,32 +406,32 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
       bool cond_upper  = (yold1 > alpha);
       bool cond_lower = (yold1 <  alpha);
       
-      NumericVector used_b;
+      const NumericVector* used_b;
       arma::mat *used_Inv;
       double used_logdet;
       if (cond_left) {
-        used_b = b_left;
+        used_b = &b_left;
         used_Inv = &Inv_left;
         used_logdet = logdet_left;
       } else if (cond_right) {
-        used_b = b_right;
+        used_b = &b_right;
         used_Inv = &Inv_right;
         used_logdet = logdet_right;
       } else {
         if (cond_upper){
-          used_b = b_upper;
+          used_b = &b_upper;
           used_Inv = &Inv_upper;
           used_logdet = logdet_upper;
         }else{
-          used_b = b_lower;
+          used_b = &b_lower;
           used_Inv = &Inv_lower;
           used_logdet = logdet_lower;
         }
       }
       
-      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, used_b, "piecewise");
-      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, used_b, "piecewise");
-      NumericVector mu_f = mu_rcpp(tmp, h, par, used_b, "piecewise");
+      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, *used_b, "piecewise");
+      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, *used_b, "piecewise");
+      NumericVector mu_f = mu_rcpp(tmp, h, par, *used_b, "piecewise");
       
       arma::vec z(2);
       z(0) = finv[0] - mu_f[0];
@@ -666,7 +440,7 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
       arma::vec temp = (*used_Inv) * z;
       double quad = arma::dot(z, temp);
       
-      NumericVector cur_center = used_b;
+      NumericVector cur_center = *used_b;
       NumericVector cur_par = par;
       std::function<NumericVector(NumericVector)> fh_wrapper =
         [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
@@ -683,8 +457,10 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
     
     
     loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
-  } else if (method == "fast-slow") {
+    return List::create(Named("ll") = loglik);
+  } 
+  // Several b's 
+  else if (method == "custom" || method == "custom test") {
     
     double eps   = par[0];
     double alpha = par[1];
@@ -701,20 +477,18 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
       double xold1 = x_old[0];
       double yold1 = x_old[1];
       
-      List res = find_b_intersections_arma(x_old, par);   
-      NumericVector b_roots = res["b_roots"];
-      double b1 = b_roots[0];
-      double b2 = (3.0*b1*b1 - 1.0)*xold1 + b1 - 3.0*b1*b1*b1 + yold1;
-      NumericVector b = NumericVector::create(b1, b2);
-      
-      arma::mat Omega = Omega_rcpp(h, par, b, "fast-slow");
+      NumericVector b = b_vec[i];
+      double b1 = b[0];
+      double b2 = b[1];
+
+      arma::mat Omega = Omega_rcpp(h, par, b, "custom");
       
       double logdet, sign;
       arma::log_det(logdet, sign, Omega);
       
-      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, b, "fast-slow");
-      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, b, "fast-slow");
-      NumericVector mu_f = mu_rcpp(tmp, h, par, b, "fast-slow");
+      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, b, "custom");
+      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, b, "custom");
+      NumericVector mu_f = mu_rcpp(tmp, h, par, b, "custom");
       
       arma::vec z(2);
       z(0) = finv[0] - mu_f[0];
@@ -728,7 +502,7 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
       NumericVector cur_par = par;
       std::function<NumericVector(NumericVector)> fh_wrapper =
         [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
-          return fh_rcpp(xx, -h/2.0, cur_par, cur_center, "fast-slow");
+          return fh_rcpp(xx, -h/2.0, cur_par, cur_center, "custom");
         };
         arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
         
@@ -742,303 +516,7 @@ Rcpp::List log_lik_path_rcpp(NumericMatrix df,
     } 
     
     loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
-  }else if (method == "fast") {
-    
-    double eps   = par[0];
-    double alpha = par[1];
-    double gamma = par[2];
-    double beta  = par[3];
-    
-    double sum_log_det_Omega = 0.0;
-    double sum_quad = 0.0;
-    double sum_log_det_D = 0.0;
-    
-    double b1, b2;
-    for (int i = 0; i < N - 1; ++i) {
-      NumericVector x_old = NumericVector::create(df(i,0), df(i,1));
-      NumericVector x_new = NumericVector::create(df(i+1,0), df(i+1,1));
-      double xold1 = x_old[0];
-      double yold1 = x_old[1];
-      if (xold1 > right_knee || xold1 < left_knee ){
-        List res = find_x_tilde(x_old, par);   
-        NumericVector b_roots = res["x_tilde"];
-        b1 = b_roots[0];
-        b2 = yold1;
-      }else{
-        if (yold1 > alpha){
-          b1 = left_knee;
-          b2 = yold1;
-        }else{
-          b1 = right_knee;
-          b2 = yold1;
-        }
-      }
-      
-      NumericVector b = NumericVector::create(b1, b2);
-      
-      arma::mat Omega = Omega_rcpp(h, par, b, "fast");
-      
-      double logdet, sign;
-      arma::log_det(logdet, sign, Omega);
-      
-      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, b, "fast");
-      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, b, "fast");
-      NumericVector mu_f = mu_rcpp(tmp, h, par, b, "fast");
-      
-      arma::vec z(2);
-      z(0) = finv[0] - mu_f[0];
-      z(1) = finv[1] - mu_f[1];
-      
-      arma::vec temp = arma::solve(Omega, z);     // solves Omega * temp = z
-      double quad = arma::dot(z, temp);
-      
-      // Jacobian D at x_new
-      NumericVector cur_center = b;
-      NumericVector cur_par = par;
-      std::function<NumericVector(NumericVector)> fh_wrapper =
-        [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
-          return fh_rcpp(xx, -h/2.0, cur_par, cur_center, "fast");
-        };
-        arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
-        
-        double sigD = 0.0, logdetD = 0.0;
-        arma::log_det(logdetD, sigD, D);
-        
-        // accumulate
-        sum_log_det_Omega += logdet;
-        sum_quad += quad;
-        sum_log_det_D += logdetD;
-    } 
-    
-    loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
-  }else if (method == "test") {
-    
-    double eps   = par[0];
-    double alpha = par[1];
-    double gamma = par[2];
-    double beta  = par[3];
-    
-    double sum_log_det_Omega = 0.0;
-    double sum_quad = 0.0;
-    double sum_log_det_D = 0.0;
-    
-    for (int i = 0; i < N - 1; ++i) {
-      NumericVector x_old = NumericVector::create(df(i,0), df(i,1));
-      NumericVector x_new = NumericVector::create(df(i+1,0), df(i+1,1));
-      double xold1 = x_old[0];
-      double yold1 = x_old[1];
-      
-      arma::mat F_prime_of_x0 = A_rcpp(par, x_new, "test");
-      arma::vec Fx0(2);
-      Fx0(0) = (x_new[0]-x_new[0]*x_new[0]*x_new[0]+alpha-x_new[1]) / eps;
-      Fx0(1) = gamma*x_new[0]+beta-x_new[1];
-      arma::vec correction;
-      double detF_prime = (-1 + 3*x_new[0]*x_new[0] + gamma) / eps;
-      
-      if (std::abs(detF_prime) < 1e-10) {
-        // fallback: single regularized solve
-        double lambda = 1e-6;
-        arma::mat F_prime_reg = F_prime_of_x0 + lambda * arma::eye(F_prime_of_x0.n_rows,
-                                                                   F_prime_of_x0.n_cols);
-        
-        bool ok = arma::solve(correction, F_prime_reg, Fx0, arma::solve_opts::no_approx);
-        
-        if (!ok || !correction.is_finite()) {
-          stop("Newton step failed even after regularization");
-        }
-        
-      } else {
-        // analytic inverse
-        arma::mat F_prime_inv(2,2);
-        
-        F_prime_inv(0,0) = -1;
-        F_prime_inv(0,1) = 1.0/eps;
-        F_prime_inv(1,0) = -gamma;
-        F_prime_inv(1,1) = (1.0 - 3*x_new[0]*x_new[0])/eps;
-        
-        F_prime_inv /= detF_prime;
-        
-        correction = F_prime_inv * Fx0;
-      }
-      
-      arma::vec bb = as<arma::vec>(x_new) - h * correction;
-      NumericVector b = wrap(bb);
-      
-      arma::mat Omega = Omega_rcpp(h, par, b, "test");
-      
-      double logdet, sign;
-      arma::log_det(logdet, sign, Omega);
-      
-      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, b, "test");
-      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, b, "test");
-      NumericVector mu_f = mu_rcpp(tmp, h, par, b, "test");
-      
-      arma::vec z(2);
-      z(0) = finv[0] - mu_f[0];
-      z(1) = finv[1] - mu_f[1];
-      
-      arma::vec temp;
-      bool ok2 = arma::solve(temp, Omega, z, arma::solve_opts::no_approx);
-      
-      if (!ok2 || !temp.is_finite()) {
-        double lambda = 1e-10;          // start very small
-        const double lambda_max = 1.0;  // cap
-        bool solved = false;
-        
-        arma::mat I = arma::eye(Omega.n_rows, Omega.n_cols);
-        
-        while (!solved && lambda <= lambda_max) {
-          arma::mat Omega_reg = Omega + lambda * I;
-          
-          solved = arma::solve(temp, Omega_reg, z, arma::solve_opts::no_approx);
-          
-          if (solved && temp.is_finite()) break;
-          
-          lambda *= 10;
-        }
-        
-        if (!solved) {
-          // last resort: pseudo-inverse (always works)
-          temp = arma::pinv(Omega) * z;
-        }
-      }
-      double quad = arma::dot(z, temp);
-      
-      // Jacobian D at x_new
-      NumericVector cur_center = b;
-      NumericVector cur_par = par;
-      std::function<NumericVector(NumericVector)> fh_wrapper =
-        [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
-          return fh_rcpp(xx, -h/2.0, cur_par, cur_center, "test");
-        };
-        arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
-        
-        double sigD = 0.0, logdetD = 0.0;
-        arma::log_det(logdetD, sigD, D);
-        
-        // accumulate
-        sum_log_det_Omega += logdet;
-        sum_quad += quad;
-        sum_log_det_D += logdetD;
-    } 
-    
-    loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
-  }else if (method == "test2") {
-    
-    double eps   = par[0];
-    double alpha = par[1];
-    double gamma = par[2];
-    double beta  = par[3];
-    
-    double sum_log_det_Omega = 0.0;
-    double sum_quad = 0.0;
-    double sum_log_det_D = 0.0;
-    
-    for (int i = 0; i < N - 1; ++i) {
-      NumericVector x_old = NumericVector::create(df(i,0), df(i,1));
-      NumericVector x_new = NumericVector::create(df(i+1,0), df(i+1,1));
-      double xold1 = x_old[0];
-      double yold1 = x_old[1];
-      
-      arma::mat F_prime_of_x0 = A_rcpp(par, x_old, "test");
-      arma::vec Fx0(2);
-      Fx0(0) = (xold1-xold1*xold1*xold1+alpha-yold1) / eps;
-      Fx0(1) = gamma*xold1+beta-yold1;
-      arma::vec correction;
-      double detF_prime = (-1 + 3*xold1*xold1 + gamma) / eps;
-      
-      if (std::abs(detF_prime) < 1e-10) {
-        // fallback: single regularized solve
-        double lambda = 1e-10;
-        arma::mat F_prime_reg = F_prime_of_x0 + lambda * arma::eye(F_prime_of_x0.n_rows,
-                                                             F_prime_of_x0.n_cols);
-        
-        bool ok = arma::solve(correction, F_prime_reg, Fx0, arma::solve_opts::no_approx);
-        
-        if (!ok || !correction.is_finite()) {
-          stop("Newton step failed even after regularization");
-        }
-        
-      } else {
-        // analytic inverse
-        arma::mat F_prime_inv(2,2);
-        
-        F_prime_inv(0,0) = -1;
-        F_prime_inv(0,1) = 1.0/eps;
-        F_prime_inv(1,0) = -gamma;
-        F_prime_inv(1,1) = (1.0 - 3*xold1*xold1)/eps;
-        
-        F_prime_inv /= detF_prime;
-        
-        correction = F_prime_inv * Fx0;
-      }
-      double a = 1.0/(1.0+arma::norm(correction,2));
-      arma::vec bb = as<arma::vec>(x_old) - a * correction;
-      NumericVector b = wrap(bb);
-      
-      arma::mat Omega = Omega_rcpp(h, par, b, "test");
-      
-      double logdet, sign;
-      arma::log_det(logdet, sign, Omega);
-      
-      NumericVector finv = fh_rcpp(x_new, -h/2.0, par, b, "test");
-      NumericVector tmp  = fh_rcpp(x_old,  h/2.0, par, b, "test");
-      NumericVector mu_f = mu_rcpp(tmp, h, par, b, "test");
-      
-      arma::vec z(2);
-      z(0) = finv[0] - mu_f[0];
-      z(1) = finv[1] - mu_f[1];
-      
-      arma::vec temp;
-      bool ok2 = arma::solve(temp, Omega, z, arma::solve_opts::no_approx);
-      
-      if (!ok2 || !temp.is_finite()) {
-        double lambda = 1e-10;          // start very small
-        const double lambda_max = 1.0;  // cap
-        bool solved = false;
-        
-        arma::mat I = arma::eye(Omega.n_rows, Omega.n_cols);
-        
-        while (!solved && lambda <= lambda_max) {
-          arma::mat Omega_reg = Omega + lambda * I;
-          
-          solved = arma::solve(temp, Omega_reg, z, arma::solve_opts::no_approx);
-          
-          if (solved && temp.is_finite()) break;
-          
-          lambda *= 10;
-        }
-        
-        if (!solved) {
-          // last resort: pseudo-inverse (always works)
-          temp = arma::pinv(Omega) * z;
-        }
-      }
-      double quad = arma::dot(z, temp);
-      
-      // Jacobian D at x_new
-      NumericVector cur_center = b;
-      NumericVector cur_par = par;
-      std::function<NumericVector(NumericVector)> fh_wrapper =
-        [cur_par, cur_center, h](NumericVector xx) -> NumericVector {
-          return fh_rcpp(xx, -h/2.0, cur_par, cur_center, "test");
-        };
-        arma::mat D = numeric_jacobian_std(fh_wrapper, x_new);
-        
-        double sigD = 0.0, logdetD = 0.0;
-        arma::log_det(logdetD, sigD, D);
-        
-        // accumulate
-        sum_log_det_Omega += logdet;
-        sum_quad += quad;
-        sum_log_det_D += logdetD;
-    } 
-    
-    loglik = sum_log_det_Omega + sum_quad - 2.0 * sum_log_det_D;
-    return loglik;
+    return List::create(Named("ll") = loglik);
   }else {
     stop("Unknown method in log_lik_path_rcpp");
   }

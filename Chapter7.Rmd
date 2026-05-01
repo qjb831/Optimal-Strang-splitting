@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 source('Brownian_motion.R',keep.source = TRUE)
 source('EM.R',keep.source = TRUE)
 source('plots.R',keep.source = TRUE)
+library(Rcpp)
 sourceCpp("DoubleWell.cpp") # functions for Strang splitting and likelihood 
 
 ########################################################
@@ -40,14 +41,14 @@ G <- function(x, Sigma = c(1.4)) Sigma
 ########################################################
 
 x0 <- c(0)
-n_paths <- 10
+n_paths <- 20
 paths <- EM_sim_fast(F,G,x0,times,n_paths,progress = TRUE)
 
 # Plot første repetition
 #plot_variable_vs_time(paths[[1]],times,to_time = T)
 
 # Definer eventuelt sub paths
-ratio <- 100
+ratio <- 600
 sub_h <- h*ratio
 sub_times <- seq(t_0,N*h,length.out=N/ratio+1)
 idx <- seq(1,N+1,by=ratio)
@@ -64,93 +65,162 @@ sub_paths <- lapply(paths, function(path) {
 plot_variable_vs_time(sub_paths[[1]],sub_times,T)
 #write.csv(bind_rows(sub_paths, .id = "path_id"), "doublewell_paths.csv", row.names = FALSE)
 ```
+
+
 ```{r}
-if (sim_new_paths){
-  full_paths <- EM_sim_fast(F,G,x0=c(0,0),times,n_paths=15,progress=TRUE)
-  paths <- lapply(full_paths, function(path) path[idx,])
-  
-  #write.csv(bind_rows(sub_paths, .id = "path_id"), "fitzhugh_paths.csv", row.names = FALSE)
-}else{
-  paths_df <- read.csv("doublewell_paths.csv")
-  paths <- paths_df %>%
-    split(.$path_id) %>%
-    lapply(select, -path_id)
+
+
+BiasR <- function(b,x,y,epsilon,sigma,well,const_term_in_N=FALSE){
+  uns_root <- median(Re(polyroot(c(-y,1,0,-1))))
+  if (well == 'left'){
+    x <- x[x<uns_root]
+  }else if (well == 'right'){
+    x <- x[x>=uns_root]
+  }
+  if (const_term_in_N == FALSE){
+    denom <- 1/(24*epsilon^3)
+    top <- (-6*b^3+3*y)*x^4 +
+      x^3*(-36*b^4-24*sigma^2*epsilon+36*b^2-8) +
+      x^2*(54*(b^3-y)*(b^2-1/3)) +
+      x*(-24*b^6+54*b^2*epsilon*sigma^2+36*b^3*y-12*sigma^2*epsilon-12*y^2) +
+      6*b^5-9*b^4*y+b^3*(-18*sigma^2*epsilon-4) +
+      6*b^2*y+12*epsilon*sigma^2*y
+    B <- mean((top*denom)^2)
+  }else if (const_term_in_N ==TRUE){
+    c0 <- (3*x^2*y)/(8*epsilon^3) - x^3/(3*epsilon^3) - y/(12*epsilon^3) - sigma^2*x^3/epsilon^2 - sigma^2*x/(2*epsilon^2) + sigma^2*y/(8*epsilon^2)
+    c1 <- -x*y/(4*epsilon^3) + (3*x^2)/(8*epsilon^3) + 1/(12*epsilon^3) + x^4/(8*epsilon^3) + (3*sigma^2)/(8*epsilon^2)
+    c2 <- (9*sigma^2*x)/(4*epsilon^2) + (3*x^3)/(2*epsilon^3) + (3*y)/(8*epsilon^3) - x/(4*epsilon^3) - (9*x^2*y)/(8*epsilon^3)
+    c3 <- (3*x*y)/(4*epsilon^3) - (9*x^2)/(4*epsilon^3) - 3/(8*epsilon^3) - (9*sigma^2)/(8*epsilon^2) - (3*x^4)/(8*epsilon^3)
+    c4 <- -(3*x^3)/(2*epsilon^3) + (3*x)/(2*epsilon^3) - (3*y)/(8*epsilon^3)
+    c5 <- (27*x^2)/(8*epsilon^3) + 3/(8*epsilon^3)
+    c6 <- -(9*x)/(4*epsilon^3)
+    B <- mean((c0+c1*b+c2*b^2+c3*b^3+c4*b^4+c5*b^5+c6*b^6)^2)
+  }
+  return(B)
 }
 
-path_bias_left <- function(b) bias(b, subset(paths[[1]],X<0)$X, c(0.2, -0.05, 1.4))
-path_bias_right <- function(b) bias(b, subset(paths[[1]],X>0)$X, c(0.2, -0.05, 1.4))
-path_bias_all <- function(b) bias(b, paths[[1]]$X, c(0.2, -0.05, 1.4))
-
-optimize(path_bias_left,c(-1.2,0))
-optimize(path_bias_right,c(0,1.2))
-optimize(path_bias_all,c(-1.2,1.2))
-
-b_vals_left <- seq(-1.2, 0, length.out = 200)
-y_vals_left <- sapply(b_vals_left, path_bias_left)
-
-b_vals_right <- seq(0, 1.2, length.out = 200)
-y_vals_right <- sapply(b_vals_right, path_bias_right)
-
-b_vals_all <- seq(-1.2, 1.2, length.out = 200)
-y_vals_all <- sapply(b_vals_all, path_bias_all)
-
-
-
-plot(b_vals_left, y_vals_left, type = "l",
-     xlab = "b", ylab = "bias",
-     main = "Bias as a function of b",
-     lwd = 2)
-plot(b_vals_right, y_vals_right, type = "l",
-     xlab = "b", ylab = "bias",
-     main = "Bias as a function of b",
-     lwd = 2)
-plot(b_vals_all, y_vals_all, type = "l",
-     xlab = "b", ylab = "bias",
-     main = "Bias as a function of b",
-     lwd = 2)
 ```
-
 
 ```{r}
 
-
-
-
-
-
-centers <- c("fix","avg bias")
-center_names <- c('Standard fixed point linearization',"global optimal bias")
+methods <- c("fix","fix penalized")
+method_names <- c('Standard fixed point linearization',"fix penalized")
 
 # True parameter vector (for overlay)
 true_params <- c(0.2, -0.05, 1.4)
 
 # Labels for parameters
 param_labels <- c("epsilon", "y", "sigma")
-
-# ---------------------- helper: single-center fitting -----------------------
-fit_for_center <- function(center_vec, show_progress = FALSE) {
-  n_paths <- length(paths)
+n_paths <- length(paths)
+par0_list <- lapply(1:n_paths, function(x) c(0.2 + runif(1,-0.15,0.15) ,runif(1,-0.2,0.2),1.4+runif(1,-1,1)) )
+fit_for_center <- function(method, show_progress = FALSE) {
+  
   preds <- vector("list", n_paths)
   for (i in seq_along(sub_paths)) {
     if (show_progress) message("  fitting path ", i, " / ", n_paths)
     this_path <- sub_paths[[i]]
-    par0 <- c(0.1,0,1)
-    
+    #par0 <- par0_list[[i]]
+    par0 <- c(0.25,0,1)
+  
     obj <- function(par, path, times) {
-      theta_drift <- par[1:2]
-      theta_diffusion <- par[3]^2
-      b <- optimize(bias,c(-1.2,1.2), as.matrix(path), par)$minimum
-      res <- tryCatch(
-        log_lik_path_rcpp(as.matrix(path), times, theta_drift,theta_diffusion,
-                          method = center_vec,b),
-        error = function(e) NULL
-      )
       
+      if (par[1] < 0.001 || par[1] > 1) return(1e20)
+      if (par[2] < -0.37 || par[2] > 0.37) return(1e20)
+      if (par[3] < 0.001) return(1e20)
+
+
+      fixed_points <- Re(polyroot(c(-par[2],1,0,-1)))
+      uns_fix <- median(fixed_points)
+      left_fix <- min(fixed_points)
+      right_fix <- max(fixed_points)
+      if (method == "fix") {
+        b_vec <- c(left_fix, right_fix)
+        penalty <- 0
+      }
+      if (method == "fix penalized") {
+        b_vec <- c(left_fix, right_fix)
+        left_bias <- BiasR(left_fix,path$X,par[2],par[1],par[3],'left',TRUE)
+        right_bias <- BiasR(right_fix,path$X,par[2],par[1],par[3],'right',TRUE)
+
+        penalty <- mean((left_bias+right_bias)^2)
+        print(penalty)
+        
+      }else if (method == "negative fix") {
+        b_vec <- -c(left_fix, right_fix)/2
+      }
+      
+      else if (method == "zero") {
+        b_vec <- c(left_fix,0, right_fix)
+      }
+      else if (method == "uns") {
+        b_vec <- c(left_fix,uns_fix, right_fix)
+      }
+      else if (method == "theoretical bias (taylor)") {
+        left_b <- optimize(avg_absbias,c(-1.4,0),par[2],par[1],par[3],'left',FALSE)$minimum
+        right_b <- optimize(avg_absbias,c(0,1.4),par[2],par[1],par[3],'right',FALSE)$minimum
+
+        b_vec <- c(left_b,right_b)
+      }
+      else if (method == "average N") {
+        b_vec <- c(optimize(avg_absN,c(-1.5,1.5),par[2],par[1],par[3],'both',FALSE)$minimum)
+      }
+      else if (method == "OU expectation b test") {
+        A <- (1-3*path$X^2)/par[1]
+        cond1 <- path$X < -1/sqrt(3)
+        cond2 <- path$X >1/sqrt(3)
+        b_vec <- ifelse(cond1,
+                        left_fix + (path$X-left_fix)*exp(A*sub_h),
+                        ifelse(cond2,
+                               right_fix + (path$X-right_fix)*exp(A*sub_h),
+                               oldX*exp(A*sub_h)))
+      }else if (method == "One-step expectation") {
+        
+        f_root <- function(b, x, x0) {
+          Fb <- (-b^3+b-par[2])/par[1]
+          DFb <- (1-3*b^2)/par[1]
+          b_tilde <- b - Fb/DFb
+          (x0 - b_tilde) * exp((1 - 3 * b_tilde^2) / par[1] * sub_h) + (b_tilde - x)
+        }
+        
+        b_vec <- mapply(
+          function(xi, x0i) {
+            f <- function(b) f_root(b, xi, x0i)
+            
+            fa <- f(-1.5)
+            fb <- f(1.5)
+            
+            if (fa * fb < 0) {
+              uniroot(f, c(-1.5, 1.5))$root
+            } else {
+              optimize(function(b) abs(f(b)), c(-1.5, 1.5))$minimum
+            }
+          },
+          path$X,
+          c(path$X[1], head(path$X, -1))
+        )
+      }
+      else if (method == "One-step expectation test") {
+        Fx <- (-path$X^3+path$X-par[2])/par[1]
+        DFx <- (1-3*path$X^2)/par[1]
+        D2Fx <- -6*path$X/par[1]
+        D3Fx <- -6/par[1]
+        b_vec <- path$X + sub_h*Fx + sub_h^2/2 * (DFx*Fx + 0.5*par[3]^2*D2Fx) + sub_h^3*(1/6*(D2Fx*Fx^2+DFx*Fx^2+par[3]^2*D3Fx*Fx) + 1/4*(par[3]^2*D2Fx*DFx))
+      }
+      
+      
+      
+
+      res <- tryCatch(
+          log_lik_path_rcpp(as.matrix(path), times, par[1:2],par[3],
+                            method = method,b_vec,uns_fix),
+          error = function(e) NULL
+        )
+
       if (is.null(res) || !is.finite(res$ll)) {
         return(1e20)
       }
-      
-      return(res$ll)  
+      lambda <- 1
+      return(res$ll + lambda*penalty)  
     }
     
     fit <- optim(par    = par0,
@@ -160,16 +230,9 @@ fit_for_center <- function(center_vec, show_progress = FALSE) {
                  method = "Nelder-Mead",
                  control = list(maxit = 5000, trace = 0)
     )
-    
-    # recompute sigma at optimum
-    # final_res <- log_lik_path_rcpp(as.matrix(this_path),
-    #                               sub_times,
-    #                               fit$par[1:2],
-    #                               method = center_vec,
-    #                               sigma = sigma_mle)
-    
-    # sigma_mle <- final_res$sigma # updated via MLE
+
     preds[[i]] <- fit$par
+    
   }
   
   # Convert results to data.frame
@@ -180,19 +243,19 @@ fit_for_center <- function(center_vec, show_progress = FALSE) {
 }
 
 # ---------------------- run fits for all centers -----------------------
-all_results_list <- vector("list", length(centers))
+all_results_list <- vector("list", length(methods))
 
-for (i in seq_along(centers)) {
-  cname <- center_names[i]
-  cent  <- centers[[i]]
-  message("Running fits for center: ", cname)
+for (i in seq_along(methods)) {
+  mname <- method_names[i]
+  meth  <- methods[[i]]
+  message("Running fits for center: ", mname)
   
-  res_df <- fit_for_center(cent, show_progress = TRUE)
+  res_df <- fit_for_center(meth, show_progress = TRUE)
   
   # add run index and center label
   res_df <- res_df %>% 
     mutate(run = seq_len(nrow(res_df)), 
-           center = cname)
+           method = mname)
   
   all_results_list[[i]] <- res_df
 }
@@ -207,18 +270,20 @@ est_df <- all_results %>%
                names_to = "param",
                values_to = "estimate") %>%
   mutate(param = factor(param, levels = param_labels),
-         center = factor(center, levels = center_names))
+         method = factor(method, levels = method_names))
 
 # ---------------------- use your new plotting function -----------------------
 p <- plot_estimates(
   est_df       = est_df,
   true_params  = true_params,
   param_labels = param_labels,
-  center_names = center_names,
+  method_names = method_names,
   title_text   = "Parameter Estimates Across Methods",
   subtitle     = "SDE estimation comparison"
 )
 
 print(p)
 ```
+
+
 

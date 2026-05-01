@@ -74,39 +74,47 @@ plot_FHN_phase_portrait <- function(par=c(0.1,0.5,1.5,1.4),
 }
 
 plot_estimates <- function(est_df, true_params, param_labels,
-                           subtitle = "", center_names = splitting_labels,
+                           subtitle = "", method_names,
                            title_text = NULL) {
-  # Create a data frame of true values repeated for each method
-  true_df <- tibble(param = param_labels, true_value = true_params)
-  true_df_expanded <- expand_grid(param = param_labels, center = center_names) %>%
-    left_join(true_df, by = "param") %>%
-    mutate(center = factor(center, levels = center_names))
   
-  # Ensure est_df$center is factor with correct levels
-  est_df <- est_df %>% mutate(center = factor(center, levels = center_names))
+  # True values
+  true_df <- tibble(param = param_labels, true_value = true_params)
+  
+  true_df_expanded <- expand_grid(param = param_labels,
+                                  method = method_names) %>%
+    left_join(true_df, by = "param") %>%
+    mutate(method = factor(method, levels = method_names))
+  
+  # Ensure correct factor levels
   est_df <- est_df %>%
-    group_by(param) %>%
+    mutate(method = factor(method, levels = method_names))
+  
+  # Filter outliers PER (param, method)
+  est_df <- est_df %>%
+    group_by(param, method) %>%
     filter(
       estimate >= quantile(estimate, 0.01, na.rm = TRUE),
       estimate <= quantile(estimate, 0.99, na.rm = TRUE)
-    )
-  # Main boxplot
-  p <- ggplot(est_df, aes(x = center, y = estimate, fill = center)) +
+    ) %>%
+    ungroup()
+  
+  # Plot
+  p <- ggplot(est_df, aes(x = method, y = estimate, fill = method)) +
     geom_boxplot(outlier.size = 0.3, show.legend = FALSE) +
     geom_point(data = true_df_expanded,
-               aes(x = center, y = true_value),
+               aes(x = method, y = true_value),
                color = "gold", size = 1, inherit.aes = FALSE) +
     geom_hline(data = true_df,
                aes(yintercept = true_value),
                color = "gold", linewidth = 1,
-               inherit.aes = FALSE,linetype = "dashed")+
-    facet_wrap(~ param, scales = "free_y", ncol = 3, labeller = label_parsed) +
+               linetype = "dashed",
+               inherit.aes = FALSE) +
+    facet_wrap(~ param, scales = "free_y", ncol = 3) +
     labs(title = title_text,
          subtitle = subtitle,
          x = "Method", y = "Estimate") +
     theme_bw(base_size = 13) +
     theme(axis.text.x = element_text(angle = 25, hjust = 1))
-  
   
   return(p)
 }
@@ -493,224 +501,228 @@ plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
   #   return(abs(err(x0)))
   # }
   
-  new_roots <- polyroot(c(-(gamma-1)*(x_tilde)+alpha-beta,0,-3*(x_tilde),2))
-  b_tilde <- min(Re(new_roots[abs(Im(new_roots))<0.00001]))
-  
-  F1 <- (x_val - x_val^3 + alpha - y_val) / eps
-  F1_prime <- (1-3*x_val^2)/eps
-  
-  N1 <- (x_val - x_val^3 + alpha - y_val) / eps
-  N1_prime <- (1-3*x_val^2)/eps
-  
-  F2 <- gamma * x_val + beta - y_val
-  
-  # determinant
-  detF <- (-1 + 3*x_val^2 + gamma) / eps
-  J <- matrix(c(
-    (1-3*x_val^2)/eps,           -1/eps,
-    gamma, -1
-  ), nrow = 2, byrow = TRUE) 
-  # inverse Jacobian entries
-  Jinv <- matrix(c(
-    -1,           1/eps,
-    -gamma, (1 - 3*x_val^2)/eps
-  ), nrow = 2, byrow = TRUE) / detF
-  eig <- eigen(J)$values
-  # compute b
-  Fvec <- c(F1, F2)
-  speed <- sqrt(F1^2+F2^2)
-  speed_mat <- diag(abs(Re(1/(1+eig))))
-  
-  p <- min(abs(Re(eig[1])),1)
-  newton_2d_line_search <- function(x0, y0,
-                                    alpha, beta, gamma, eps,
-                                    tol = 1e-6,
-                                    maxit = 50,
-                                    rho = 0.5,
-                                    c = 1e-6,
-                                    verbose = FALSE) {
-    
-    x <- c(x0, y0)
-    
-    for (k in 1:maxit) {
-
-      
-      Fvec <- c(
-        (x0 - x0^3 + alpha - y0) / eps,
-        gamma * x0 + beta - y0
-      )
-      
-      norm_F <- sum(Fvec^2)
-      
-      if (norm_F < tol) {
-        if (verbose) cat("Converged in", k, "iterations\n")
-        return(x)
-      }
-      
-      J <- matrix(c(
-        (1 - 3*x0^2)/eps,  -1/eps,
-        gamma,                -1
-      ), nrow = 2, byrow = TRUE)
-      
-      step <- tryCatch(
-        solve(J, Fvec),
-        error = function(e) {
-          warning("Jacobian singular, fallback step")
-          return(Fvec * 0.1)
-        }
-      )
-
-      step_norm <- sqrt(sum(step^2))
-      if (step_norm > 1) {
-        step <- step / step_norm
-      }
-      
-      alp <- 1
-      
-      while (TRUE) {
-        x_new <- x - alp * step
-        
-        F_new <- c(
-          (x_new[1] - x_new[1]^3 + alpha - x_new[2]) / eps,
-          gamma * x_new[1] + beta - x_new[2]
-        )
-        
-        if (sum(F_new^2) <= (1 - c * alp) * norm_F) {
-          break
-        }
-        
-        alp <- rho * alp
-        
-        if (alp < 1e-3) {
-          # accept anyway (important!)
-          break
-        }
-      }
-      
-      x <- x - alp * step
-    }
-    
-    warning("Did not converge")
-    return(x)
-  }
-  trust_region_step <- function(x, alpha, beta, gamma, eps, Delta) {
-    
-    x_val <- x[1]
-    y_val <- x[2]
-    
-    # F(x)
-    Fvec <- c(
-      (x_val - x_val^3 + alpha - y_val) / eps,
-      gamma * x_val + beta - y_val
-    )
-    
-    # Jacobian
-    J <- matrix(c(
-      (1 - 3*x_val^2)/eps,  -1/eps,
-      gamma,                -1
-    ), nrow = 2, byrow = TRUE)
-    
-    # Newton step
-    step <- tryCatch(
-      solve(J, Fvec),
-      error = function(e) Fvec * 0.1  # fallback
-    )
-    
-    # Trust region clipping
-    step_norm <- sqrt(sum(step^2))
-    
-    if (step_norm > Delta) {
-      step <- (Delta / step_norm) * step
-    }
-    
-    x_new <- x - step
-    
-    return(x_new)
-  }
-  trust_region_adaptive <- function(x, alpha, beta, gamma, eps, Delta) {
-    
-    F_fun <- function(x) {
-      c(
-        (x[1] - x[1]^3 + alpha - x[2]) / eps,
-        gamma * x[1] + beta - x[2]
-      )
-    }
-    
+  # new_roots <- polyroot(c(-(gamma-1)*(x_tilde)+alpha-beta,0,-3*(x_tilde),2))
+  # b_tilde <- min(Re(new_roots[abs(Im(new_roots))<0.00001]))
+  # 
+  # F1 <- (x_val - x_val^3 + alpha - y_val) / eps
+  # F1_prime <- (1-3*x_val^2)/eps
+  # 
+  # N1 <- (x_val - x_val^3 + alpha - y_val) / eps
+  # N1_prime <- (1-3*x_val^2)/eps
+  # 
+  # F2 <- gamma * x_val + beta - y_val
+  # 
+  # # determinant
+  # detF <- (-1 + 3*x_val^2 + gamma) / eps
+  # J <- matrix(c(
+  #   (1-3*x_val^2)/eps,           -1/eps,
+  #   gamma, -1
+  # ), nrow = 2, byrow = TRUE) 
+  # # inverse Jacobian entries
+  # Jinv <- matrix(c(
+  #   -1,           1/eps,
+  #   -gamma, (1 - 3*x_val^2)/eps
+  # ), nrow = 2, byrow = TRUE) / detF
+  # eig <- eigen(J)$values
+  # # compute b
+  # Fvec <- c(F1, F2)
+  # speed <- sqrt(F1^2+F2^2)
+  # speed_mat <- diag(abs(Re(1/(1+eig))))
+  # 
+  # p <- min(abs(Re(eig[1])),1)
+  # newton_2d_line_search <- function(x0, y0,
+  #                                   alpha, beta, gamma, eps,
+  #                                   tol = 1e-6,
+  #                                   maxit = 50,
+  #                                   rho = 0.5,
+  #                                   c = 1e-6,
+  #                                   verbose = FALSE) {
+  #   
+  #   x <- c(x0, y0)
+  #   
+  #   for (k in 1:maxit) {
+  # 
+  #     
+  #     Fvec <- c(
+  #       (x0 - x0^3 + alpha - y0) / eps,
+  #       gamma * x0 + beta - y0
+  #     )
+  #     
+  #     norm_F <- sum(Fvec^2)
+  #     
+  #     if (norm_F < tol) {
+  #       if (verbose) cat("Converged in", k, "iterations\n")
+  #       return(x)
+  #     }
+  #     
+  #     J <- matrix(c(
+  #       (1 - 3*x0^2)/eps,  -1/eps,
+  #       gamma,                -1
+  #     ), nrow = 2, byrow = TRUE)
+  #     
+  #     step <- tryCatch(
+  #       solve(J, Fvec),
+  #       error = function(e) {
+  #         warning("Jacobian singular, fallback step")
+  #         return(Fvec * 0.1)
+  #       }
+  #     )
+  # 
+  #     step_norm <- sqrt(sum(step^2))
+  #     if (step_norm > 1) {
+  #       step <- step / step_norm
+  #     }
+  #     
+  #     alp <- 1
+  #     
+  #     while (TRUE) {
+  #       x_new <- x - alp * step
+  #       
+  #       F_new <- c(
+  #         (x_new[1] - x_new[1]^3 + alpha - x_new[2]) / eps,
+  #         gamma * x_new[1] + beta - x_new[2]
+  #       )
+  #       
+  #       if (sum(F_new^2) <= (1 - c * alp) * norm_F) {
+  #         break
+  #       }
+  #       
+  #       alp <- rho * alp
+  #       
+  #       if (alp < 1e-3) {
+  #         # accept anyway (important!)
+  #         break
+  #       }
+  #     }
+  #     
+  #     x <- x - alp * step
+  #   }
+  #   
+  #   warning("Did not converge")
+  #   return(x)
+  # }
+  # trust_region_step <- function(x, alpha, beta, gamma, eps, Delta) {
+  #   
+  #   x_val <- x[1]
+  #   y_val <- x[2]
+  #   
+  #   # F(x)
+  #   Fvec <- c(
+  #     (x_val - x_val^3 + alpha - y_val) / eps,
+  #     gamma * x_val + beta - y_val
+  #   )
+  #   
+  #   # Jacobian
+  #   J <- matrix(c(
+  #     (1 - 3*x_val^2)/eps,  -1/eps,
+  #     gamma,                -1
+  #   ), nrow = 2, byrow = TRUE)
+  #   
+  #   # Newton step
+  #   step <- tryCatch(
+  #     solve(J, Fvec),
+  #     error = function(e) Fvec * 0.1  # fallback
+  #   )
+  #   
+  #   # Trust region clipping
+  #   step_norm <- sqrt(sum(step^2))
+  #   
+  #   if (step_norm > Delta) {
+  #     step <- (Delta / step_norm) * step
+  #   }
+  #   
+  #   x_new <- x - step
+  #   
+  #   return(x_new)
+  # }
+  # trust_region_adaptive <- function(x, alpha, beta, gamma, eps, Delta) {
+  #   
+  #   F_fun <- function(x) {
+  #     c(
+  #       (x[1] - x[1]^3 + alpha - x[2]) / eps,
+  #       gamma * x[1] + beta - x[2]
+  #     )
+  #   }
+  #   
     J_fun <- function(x) {
       matrix(c(
         (1 - 3*x[1]^2)/eps,  -1/eps,
         gamma,               -1
       ), 2, 2, byrow = TRUE)
     }
-    
-    Fvec <- F_fun(x)
-    J <- J_fun(x)
-    
-    step <- tryCatch(solve(J, Fvec), error = function(e) Fvec * 0.1)
-    
-    # clip step
-    norm_s <- sqrt(sum(step^2))
-    if (norm_s > Delta) {
-      step <- (Delta / norm_s) * step
-    }
-    
-    x_new <- x - step
-    
-    # compute rho
-    pred <- sum(Fvec^2) - sum((Fvec - J %*% step)^2)
-    actual <- sum(Fvec^2) - sum(F_fun(x_new)^2)
-    
-    rho <- actual / (pred + 1e-10)
-    
-    # update Delta
-    if (rho < 0.25) {
-      Delta <- 0.25 * Delta
-    } else if (rho > 0.75) {
-      Delta <- min(2 * Delta, 10)
-    }
-    
-    return(list(x = x_new, Delta = Delta))
-  }
-  speed <- sqrt(sum(Fvec^2))
-  jac_size <- norm(J, type = "2")
-  
-  Delta <- min(
-    speed,
-    1 / (jac_size + 1e-8)
-  )
-  #b <- c(x_val - p*F1/F1_prime,y_val)
-  b_newt <- newton_2d_line_search(x_val,y_val,0.5,1.4,1.5,0.05)
-  b_trust <- trust_region_adaptive(c(x_val,y_val),0.5,1.4,1.5,0.05,Delta)$x
-  Fb1 <- (b_trust[1] - b_trust[1]^3 + alpha - b_trust[2]) / eps
-  Fb2 <- gamma * b_trust[1] + beta - b_trust[2]
-  
-  # determinant
-  detFb <- (-1 + 3*b_trust[1]^2 + gamma) / eps
-  
-  # inverse Jacobian entries
-  Jbinv <- matrix(c(
-    -1,           1/eps,
-    -gamma, (1 - 3*b_trust[1]^2)/eps
-  ), nrow = 2, byrow = TRUE) / detF
-  
-  # compute b
-  Fbvec <- c(Fb1, Fb2)
-  speedb <- sqrt(Fb1^2+Fb2^2)
-  b_tilde <- c(b_trust[1], b_trust[2]) - Jbinv %*% Fbvec
-  
-  
-  
+  #   
+  #   Fvec <- F_fun(x)
+  #   J <- J_fun(x)
+  #   
+  #   step <- tryCatch(solve(J, Fvec), error = function(e) Fvec * 0.1)
+  #   
+  #   # clip step
+  #   norm_s <- sqrt(sum(step^2))
+  #   if (norm_s > Delta) {
+  #     step <- (Delta / norm_s) * step
+  #   }
+  #   
+  #   x_new <- x - step
+  #   
+  #   # compute rho
+  #   pred <- sum(Fvec^2) - sum((Fvec - J %*% step)^2)
+  #   actual <- sum(Fvec^2) - sum(F_fun(x_new)^2)
+  #   
+  #   rho <- actual / (pred + 1e-10)
+  #   
+  #   # update Delta
+  #   if (rho < 0.25) {
+  #     Delta <- 0.25 * Delta
+  #   } else if (rho > 0.75) {
+  #     Delta <- min(2 * Delta, 10)
+  #   }
+  #   
+  #   return(list(x = x_new, Delta = Delta))
+  # }
+  # speed <- sqrt(sum(Fvec^2))
+  # jac_size <- norm(J, type = "2")
+  # 
+  # Delta <- min(
+  #   speed,
+  #   1 / (jac_size + 1e-8)
+  # )
+  # #b <- c(x_val - p*F1/F1_prime,y_val)
+  # b_newt <- newton_2d_line_search(x_val,y_val,0.5,1.4,1.5,0.05)
+  # b_trust <- trust_region_adaptive(c(x_val,y_val),0.5,1.4,1.5,0.05,Delta)$x
+  # Fb1 <- (b_trust[1] - b_trust[1]^3 + alpha - b_trust[2]) / eps
+  # Fb2 <- gamma * b_trust[1] + beta - b_trust[2]
+  # 
+  # # determinant
+  # detFb <- (-1 + 3*b_trust[1]^2 + gamma) / eps
+  # 
+  # # inverse Jacobian entries
+  # Jbinv <- matrix(c(
+  #   -1,           1/eps,
+  #   -gamma, (1 - 3*b_trust[1]^2)/eps
+  # ), nrow = 2, byrow = TRUE) / detF
+  # 
+  # # compute b
+  # Fbvec <- c(Fb1, Fb2)
+  # speedb <- sqrt(Fb1^2+Fb2^2)
+  # b_tilde <- c(b_trust[1], b_trust[2]) - Jbinv %*% Fbvec
+  # 
+  # 
+  fix <- c(-0.7950167 , 0.2074749)
+  b_OU <- fix + (c(x_val,y_val)-fix)*expm(J_fun(x_val)*0.07)
   
   #N_roots <- Re(polyroot(c(x_val-0.07*x_val^3/(2*0.05),-1,0.07*3*x_val/(2*0.05),-0.07/0.05)))
-  N_roots <- Re(polyroot(c(-0.5*x_val-0.07*x_val^3/(4*0.05),-1,0.07*3*x_val/(4*0.05),-0.07/(2*0.05))))
-  
+  #N_roots <- Re(polyroot(c(-0.5*x_val-0.07*x_val^3/(4*0.05),-1,0.07*3*x_val/(4*0.05),-0.07/(2*0.05))))
+  N_roots <- Re(polyroot(c(-x_val^3-3*x_val^2*0.07*(-x_val^3+x_val+0.5-y_val)/0.1^2-3*0.07*0.3^2*x_val/0.1-3*x_val^2*(-x_val^3+x_val+0.5-y_val)*(-3*x_val^2+1)*0.07^2/(2*0.1^3)-6*x_val*(-x_val^3+x_val+0.5-y_val)^2*0.07^2/(2*0.1^3)-3*0.3^2*(-x_val^3+x_val+0.5-y_val)*0.07^2/(2*0.1^2)+(1.5*x_val-y_val+1.4)*(3*x_val^2)*0.07^2/(2*0.1^2)-3*0.3^2*x_val*(-9*x_val^2+2)*0.07^2/(2*0.1^2)-3*0.3^2*(-x_val^3+x_val+0.5-y_val)*0.07^2/(2*0.1^2)
+                           ,0
+                           ,3*x_val+3*0.07*(-x_val^3+x_val+0.5-y_val)/0.1^2+3*(-3*x_val^2+1)*(-x_val^3+x_val+0.5-y_val)*0.07^2/(2*0.1^3)-3*(1.5*x_val-y_val+1.4)*0.07^2/(2*0.1^2)-9*0.3^2*x_val*0.07^2/(2*0.1^2),
+                           -2)))
   df_poly <- data.frame(
-    b1 = bs,
+    b1 = bs
     # poly_val1 = -x_val^3 + 3*bs^2*x_val - 3*bs^3 + alpha + bs, # N=0
     # poly_val2 = (3*bs^2-1)*x_tilde+bs-3*bs^3+y_val,
     # poly_val3 = (3*bs^2-1)*x_val+bs-3*bs^3+y_val, # N=F
     # poly_val4 = beta-gamma*(x_val-x_tilde-bs)
-    poly_val5 = -3*y_val*bs^2+gamma*bs-(gamma-1)*y_val+beta
+    #poly_val5 = -3*y_val*bs^2+gamma*bs-(gamma-1)*y_val+beta
   )
   
   # Top k choices
@@ -742,13 +754,13 @@ plot_top_k_b_choices <- function(paths, x0, b_results, par, h, k = 5,
     # geom_line(data = df_poly, aes(x = b1, y = poly_val5),
     #           color = "red", linewidth = 0.6) +
     # geom_vline(xintercept = b_tilde,color = "red", linewidth = 0.6) +
-    geom_vline(xintercept = b_trust[1],color = "red", linewidth = 0.6) +
-    geom_hline(yintercept = b_trust[2],color = "red", linewidth = 0.6) +
-    # geom_vline(xintercept = b_tilde[1],color = "blue", linewidth = 0.6) +
-    # geom_hline(yintercept = b_tilde[2],color = "blue", linewidth = 0.6) +
-    #geom_vline(xintercept = N_roots[1],color = "red", linewidth = 0.6) +
-    #geom_vline(xintercept = N_roots[2],color = "red", linewidth = 0.6) +
-    #geom_vline(xintercept = N_roots[3],color = "red", linewidth = 0.6) +
+    # geom_vline(xintercept = b_trust[1],color = "red", linewidth = 0.6) +
+    # geom_hline(yintercept = b_trust[2],color = "red", linewidth = 0.6) +
+    geom_vline(xintercept = b_OU[1],color = "red", linewidth = 0.6) +
+    geom_hline(yintercept = b_OU[2],color = "red", linewidth = 0.6) +
+    # geom_vline(xintercept = N_roots[1],color = "red", linewidth = 0.6) +
+    # geom_vline(xintercept = N_roots[2],color = "red", linewidth = 0.6) +
+    # geom_vline(xintercept = N_roots[3],color = "red", linewidth = 0.6) +
 
     # Top k points
     geom_point(data = top_k,

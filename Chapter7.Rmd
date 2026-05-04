@@ -41,14 +41,14 @@ G <- function(x, Sigma = c(1.4)) Sigma
 ########################################################
 
 x0 <- c(0)
-n_paths <- 20
+n_paths <- 1000
 paths <- EM_sim_fast(F,G,x0,times,n_paths,progress = TRUE)
 
 # Plot første repetition
 #plot_variable_vs_time(paths[[1]],times,to_time = T)
 
 # Definer eventuelt sub paths
-ratio <- 600
+ratio <- 800
 sub_h <- h*ratio
 sub_times <- seq(t_0,N*h,length.out=N/ratio+1)
 idx <- seq(1,N+1,by=ratio)
@@ -69,7 +69,40 @@ plot_variable_vs_time(sub_paths[[1]],sub_times,T)
 
 ```{r}
 
+compute_bias_per_transition <- function(x_old, par, left_b, right_b, const_term_in_N = FALSE){
+  
+  epsilon <- par[1]
+  y       <- par[2]
+  sigma   <- par[3]
 
+  uns_fix <- median(Re(polyroot(c(-y,1,0,-1))))
+
+
+  # full vectors (not split yet)
+  bias_left_full  <- abs(
+    (-6*left_b^3+3*y)*x_old^4 +
+    x_old^3*(-36*left_b^4-24*sigma^2*epsilon+36*left_b^2-8) +
+    x_old^2*(54*(left_b^3-y)*(left_b^2-1/3)) +
+    x_old*(-24*left_b^6+54*left_b^2*epsilon*sigma^2+36*left_b^3*y-12*sigma^2*epsilon-12*y^2) +
+    6*left_b^5-9*left_b^4*y+left_b^3*(-18*sigma^2*epsilon-4) +
+    6*left_b^2*y+12*epsilon*sigma^2*y
+  ) / (24*epsilon^3)
+
+  bias_right_full <- abs(
+    (-6*right_b^3+3*y)*x_old^4 +
+    x_old^3*(-36*right_b^4-24*sigma^2*epsilon+36*right_b^2-8) +
+    x_old^2*(54*(right_b^3-y)*(right_b^2-1/3)) +
+    x_old*(-24*right_b^6+54*right_b^2*epsilon*sigma^2+36*right_b^3*y-12*sigma^2*epsilon-12*y^2) +
+    6*right_b^5-9*right_b^4*y+right_b^3*(-18*sigma^2*epsilon-4) +
+    6*right_b^2*y+12*epsilon*sigma^2*y
+  ) / (24*epsilon^3)
+
+  use_right <- x_old > uns_fix
+
+  bias_i <- ifelse(use_right, bias_right_full, bias_left_full)
+
+  return(bias_i)
+}
 BiasR <- function(b,x,y,epsilon,sigma,well,const_term_in_N=FALSE){
   uns_root <- median(Re(polyroot(c(-y,1,0,-1))))
   if (well == 'left'){
@@ -85,7 +118,7 @@ BiasR <- function(b,x,y,epsilon,sigma,well,const_term_in_N=FALSE){
       x*(-24*b^6+54*b^2*epsilon*sigma^2+36*b^3*y-12*sigma^2*epsilon-12*y^2) +
       6*b^5-9*b^4*y+b^3*(-18*sigma^2*epsilon-4) +
       6*b^2*y+12*epsilon*sigma^2*y
-    B <- mean((top*denom)^2)
+    B <- abs(top*denom)
   }else if (const_term_in_N ==TRUE){
     c0 <- (3*x^2*y)/(8*epsilon^3) - x^3/(3*epsilon^3) - y/(12*epsilon^3) - sigma^2*x^3/epsilon^2 - sigma^2*x/(2*epsilon^2) + sigma^2*y/(8*epsilon^2)
     c1 <- -x*y/(4*epsilon^3) + (3*x^2)/(8*epsilon^3) + 1/(12*epsilon^3) + x^4/(8*epsilon^3) + (3*sigma^2)/(8*epsilon^2)
@@ -112,16 +145,15 @@ true_params <- c(0.2, -0.05, 1.4)
 # Labels for parameters
 param_labels <- c("epsilon", "y", "sigma")
 n_paths <- length(paths)
-par0_list <- lapply(1:n_paths, function(x) c(0.2 + runif(1,-0.15,0.15) ,runif(1,-0.2,0.2),1.4+runif(1,-1,1)) )
+par0_list <- lapply(1:n_paths, function(x) c(0.3 + runif(1,-0.15,0.15) ,runif(1,-0.2,0.2),0.7+runif(1,-0.2,0.8)) )
 fit_for_center <- function(method, show_progress = FALSE) {
   
   preds <- vector("list", n_paths)
   for (i in seq_along(sub_paths)) {
     if (show_progress) message("  fitting path ", i, " / ", n_paths)
     this_path <- sub_paths[[i]]
-    #par0 <- par0_list[[i]]
-    par0 <- c(0.25,0,1)
-  
+    par0 <- par0_list[[i]]
+
     obj <- function(par, path, times) {
       
       if (par[1] < 0.001 || par[1] > 1) return(1e20)
@@ -139,12 +171,11 @@ fit_for_center <- function(method, show_progress = FALSE) {
       }
       if (method == "fix penalized") {
         b_vec <- c(left_fix, right_fix)
-        left_bias <- BiasR(left_fix,path$X,par[2],par[1],par[3],'left',TRUE)
-        right_bias <- BiasR(right_fix,path$X,par[2],par[1],par[3],'right',TRUE)
+        bias_i <- compute_bias_per_transition(path$X, par, left_fix, right_fix)
+        #bias_i <- bias_i/sum(bias_i)
+        penalty <- sum(log(1/(bias_i+1e-8)))    
+        #penalty <- sum(log1p(bias_i))
 
-        penalty <- mean((left_bias+right_bias)^2)
-        print(penalty)
-        
       }else if (method == "negative fix") {
         b_vec <- -c(left_fix, right_fix)/2
       }
@@ -219,7 +250,9 @@ fit_for_center <- function(method, show_progress = FALSE) {
       if (is.null(res) || !is.finite(res$ll)) {
         return(1e20)
       }
-      lambda <- 1
+      lambda <- 0.02130493
+      #lambda <- 70000
+      if (method=='fix penalized') print(c(res$ll,lambda*penalty,res$ll + lambda*penalty))
       return(res$ll + lambda*penalty)  
     }
     
@@ -284,6 +317,7 @@ p <- plot_estimates(
 
 print(p)
 ```
+
 
 
 

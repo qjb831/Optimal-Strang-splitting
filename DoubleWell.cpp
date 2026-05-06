@@ -123,17 +123,27 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
   
   double h = times_r[1] - times_r[0];
   int L = N - 1;
-  
+  std::string method_str = as<std::string>(method);
   arma::vec data_vec = data.col(0);
   arma::vec data_old = data_vec.rows(0, N - 2);
   arma::vec data_new = data_vec.rows(1, N - 1);
+  arma::vec data_vec_shifted;
+  arma::vec data_new_shifted;
+  if (method_str == "fix shifted"){
+    data_vec_shifted = data.col(1);
+    data_new_shifted = data_vec_shifted.rows(1, N - 1);
+    
+  }
+
   
-  std::string method_str = as<std::string>(method);
+  
+  
   
   std::vector<double> Z_list(L);
   std::vector<double> b_list(L);
   std::vector<double> A_list(L);
-
+  std::vector<double> logdensity_list(L);
+  
   
   // ===================== one b =====================
   if (method_str == "avg bias" || method_str == "godambe"|| method_str == "average N") {
@@ -154,6 +164,7 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
       double x_old = data_old(i);
       double x_new = data_new(i);
       
+      
       double tmp = fh_scalar(x_old, h / 2.0, par, use_b, const_term_in_N);
       double z = fh_scalar(x_new, -h / 2.0, par, use_b, const_term_in_N) - 
         mu_scalar(tmp, h, par, use_b, const_term_in_N);
@@ -166,8 +177,6 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
       if (std::abs(D) < 1e-12) D = (D >= 0 ? 1e-12 : -1e-12);
       
       sum_logD += std::log(std::abs(D));
-      
-
       sum_quad += z * inv_Omega * z;
       sum_logOmega += log_Omega;
   
@@ -181,10 +190,10 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
     );
   }
   // ===================== two b's =====================
-  else if (method_str == "fix" || method_str == "fix penalized" || method_str == "negative fix" || method_str == "MLE splitting" || method_str == "theoretical bias (taylor)"|| method_str == "empirical bias (first-order)" || method_str == "theoretical bias (first-order)") {
+  else if (method_str == "fix" || method_str == "fix penalized"|| method_str == "fix shifted" || method_str == "negative fix" || method_str == "MLE splitting" || method_str == "theoretical bias (taylor)"|| method_str == "empirical bias (first-order)" || method_str == "theoretical bias (first-order)") {
     
     bool const_term_in_N;
-    if (method_str == "fix" || method_str == "fix penalized" || method_str == "MLE splitting"  || method_str == "theoretical bias (taylor)"){
+    if (method_str == "fix" || method_str == "fix penalized" || method_str == "fix shifted" || method_str == "MLE splitting"  || method_str == "theoretical bias (taylor)"){
       const_term_in_N = false;
     }else if (method_str == "empirical bias (first-order)" || method_str == "theoretical bias (first-order)"){
       const_term_in_N = true;
@@ -208,7 +217,12 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
 
     for (int i = 0; i < L; i++) {
       double x_old = data_old(i);
-      double x_new = data_new(i);
+      double x_new; 
+      if (method_str == "fix shifted"){
+        x_new = data_new_shifted(i);
+      }else{
+        x_new = data_new(i);
+      }
       
       bool cond = (x_old > uns_fix);
       double use_b = cond ? right_b : left_b;
@@ -231,13 +245,15 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
       if (std::abs(D) < 1e-12) D = (D >= 0 ? 1e-12 : -1e-12);
       
       sum_logD += std::log(std::abs(D));
-      
+      logdensity_list[i] = -2*std::log(std::abs(D));
       if (cond) {
         sum_quad += z * inv_right * z;
         sum_logOmega += log_right;
+        logdensity_list[i] += z * inv_right * z + log_right;
       } else {
         sum_quad += z * inv_left * z;
         sum_logOmega += log_left;
+        logdensity_list[i] += z * inv_left * z + log_left;
       }
     }
     
@@ -246,7 +262,8 @@ Rcpp::List log_lik_path_rcpp(const NumericMatrix &df_r,
     return List::create(
       Named("ll") = ll,
       Named("A_list") = A_list,
-      Named("Z_list") = Z_list
+      Named("Z_list") = Z_list,
+      Named("logdensity_list") = logdensity_list
     );
   }
   // three b's

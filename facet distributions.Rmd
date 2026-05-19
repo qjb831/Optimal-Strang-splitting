@@ -1,0 +1,246 @@
+---
+title: "facet distributions"
+author: "Johan Ravn Cornelius"
+date: "2026-05-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source('Brownian_motion.R',keep.source = TRUE)
+source('EM.R',keep.source = TRUE)
+library(ggplot2)
+library(latex2exp)
+library(cowplot)
+library(tidyverse)
+```
+
+```{r}
+theme_bw(base_size=16)+
+  theme(panel.grid.major = element_blank(), # remove the ugly lines
+        panel.grid.minor = element_blank())+
+  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  
+  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
+        strip.text = element_text(face="bold"),
+        strip.background = element_rect(fill="grey")) # facet strips
+```
+
+
+Double-well potential model, including choice of parameters:
+```{r}
+y <- 0.05
+eps <- 0.1
+sigma <- 1.5
+
+F <- function(x){(x-x^3-y)/eps}
+DF <- function(x){(1-3*x^2)/eps}
+G <- function(x){sigma}
+```
+
+Splitting scheme functions:
+```{r}
+A <- function(c){DF(c)}
+btilde <- function(c){ c - F(c)/DF(c) }
+N <- function(x,c){(-x^3+3*c^2*x-2*c^3)/eps}
+muh <- function(x,h,c){exp(A(c)*h)*x+(1-exp(A(c)*h))*btilde(c)}
+Omegah <- function(h,c){  sigma^2 * (exp(2*A(c)*h)-1)/(2*A(c))  }
+fh_fun <- function(x, h,c) {
+  ODEfun <- function(t, state, parms) {
+    u1 <- state[1]
+    du1 <- N(u1,c)
+    list(c(du1)) }
+  out <- deSolve::ode(y = x, times = c(0, h), func = ODEfun, parms = NULL, method = 'rk4')
+  as.numeric(out[nrow(out), -1])
+}
+```
+
+Choice of transition density:
+```{r}
+x0 <- -0.5
+h <- 0.1
+```
+
+Number of simulations:
+```{r}
+M <- 10000
+```
+
+Simulating EM steps (independent of chosen splitting):
+```{r}
+hEM <- h/500
+EMtimes <- seq(0,h,by=hEM)
+EMsim <- rep(NA,M)
+for(i in 1:M){
+  EMsteps <-  EM_sim_fast(F,G,x0,EMtimes,n_paths=1,progress = FALSE)[[1]]
+  EMsim[i] <- EMsteps[nrow(EMsteps),1]
+}
+EMdata <- data.frame(EMsim)
+EMdata$scheme <- "EM"
+EMdata$x0 <- -0.5
+names(EMdata) <- c("sim", "scheme", "Initial value")
+```
+
+Finding a c that minimizes bias function:
+```{r}
+B <- function(b,x,y,eps,sigma){
+  denom <- 1/(24*eps^3)
+  top <- (-6*b^3+3*y)*x^4 +
+    x^3*(-36*b^4-24*sigma^2*eps+36*b^2-8) +
+    x^2*(54*(b^3-y)*(b^2-1/3)) +
+    x*(-24*b^6+54*b^2*eps*sigma^2+36*b^3*y-12*sigma^2*eps-12*y^2) +
+    6*b^5-9*b^4*y+b^3*(-18*sigma^2*eps-4) +
+    6*b^2*y+12*eps*sigma^2*y
+  return(top*denom)
+}
+get_roots <- function(y){
+  r <- polyroot(c(-y, 1, 0, -1))  # -x^3 + x - y = 0
+  r <- Re(r[abs(Im(r)) < 1e-8])  # keep real roots
+  sort(r)
+}
+inv <- function(x,y,sigma,eps){exp(2*(0.5*x^2-0.25*x^4-y*x)/(sigma^2*eps))}
+avg_absbias <- function(b,y,eps,sigma){
+  uns_root <- median(get_roots(y))
+  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
+  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , -Inf,uns_root,y,sigma,eps)$value
+  integrand <- function(x){
+    abs(B(b,x,y,eps,sigma) )* inv(x,y,sigma,eps) / Z
+  }
+  abs(integrate(integrand, -Inf, uns_root)$value*p_inv)
+}
+avg_absbias_positive<- function(b,y,eps,sigma){
+  uns_root <- median(get_roots(y))
+  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
+  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , uns_root,Inf,y,sigma,eps)$value
+  integrand <- function(x){
+    abs(B(b,x,y,eps,sigma) )* inv(x,y,sigma,eps) / Z
+  }
+  abs(integrate(integrand, uns_root, Inf)$value*p_inv)
+}
+
+c2 <- optimize(f=avg_absbias,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
+c2max <- optimize(f=avg_absbias_positive,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
+```
+
+```{r}
+StrangSim <- function(x0,h,c,M){
+  X0 <- rep(x0,M)
+  xi <- rnorm(M,0,sqrt(Omegah(h,c)))
+  step1 <- mapply(fh_fun,X0,h/2,c)
+  step2 <- mapply(muh,step1,h,c)+xi
+  step3 <- mapply(fh_fun,step2,h/2,c)
+  return(step3)
+}
+```
+
+Negative fixed point (attracting when y>0,x<uns):
+```{r}
+StrangDataFix <- data.frame(StrangSim(x0,h, min(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataFix$scheme <- "Fixed point"
+StrangDataFix$x0 <- -0.5
+names(StrangDataFix) <- c("sim","scheme", "Initial value")
+```
+
+Minimal mean bias when x<uns:
+```{r}
+StrangDataMin <- data.frame(StrangSim(x0,h, c2  ,M))
+StrangDataMin$scheme <- "Minimal mean bias"
+StrangDataMin$x0 <- -0.5
+names(StrangDataMin) <- c("sim","scheme", "Initial value")
+```
+
+
+Opposite fixed point:
+```{r}
+StrangDataOpp <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataOpp$scheme <- "Opposite fixed point"
+StrangDataOpp$x0 <- -0.5
+names(StrangDataOpp) <- c("sim","scheme","Initial value")
+```
+
+Data when x<uns:
+```{r}
+data <- rbind(EMdata, StrangDataFix,StrangDataMin,StrangDataOpp)
+```
+
+
+Plot:
+```{r}
+colors <- c("Fixed point"="red",
+            "Minimal mean bias"="green3", 
+            "Opposite fixed point"="blue",
+            "EM"="black")
+ggplot(data, aes(x=sim, color=scheme)) + geom_density(bw=0.17,lwd=1.5)+
+  labs(x=TeX('$X_h$'),y="Density",color="Distribution",title=TeX('$X_0=-0.5$'))
+```
+
+
+
+Adding x0>uns to the data:
+
+
+```{r}
+x0 <- 0.2
+EMsim2 <- rep(NA,M)
+for(i in 1:M){
+  EMsteps2 <-  EM_sim_fast(F,G,x0,EMtimes,n_paths=1,progress = FALSE)[[1]]
+  EMsim2[i] <- EMsteps2[nrow(EMsteps2),1]
+}
+EMdata2 <- data.frame(EMsim2)
+EMdata2$scheme <- "EM"
+EMdata2$x0 <- 0.2
+names(EMdata2) <- c("sim", "scheme", "Initial value")
+StrangDataFix2 <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataFix2$scheme <- "Fixed point"
+StrangDataFix2$x0 <- 0.2
+names(StrangDataFix2) <- c("sim","scheme", "Initial value")
+StrangDataMinPos2 <- data.frame(StrangSim(x0,h, c2max  ,M))
+StrangDataMinPos2$scheme <- "Minimal mean bias"
+StrangDataMinPos2$x0 <- 0.2
+names(StrangDataMinPos2) <- c("sim","scheme","Initial value")
+StrangDataOpp2 <- data.frame(StrangSim(x0,h, min(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataOpp2$scheme <- "Opposite fixed point"
+StrangDataOpp2$x0 <- 0.2
+names(StrangDataOpp2) <- c("sim","scheme","Initial value")
+```
+
+```{r}
+data2 <- rbind(EMdata2,StrangDataFix2,StrangDataMinPos2,StrangDataOpp2)
+longdata <- rbind(data, data2)
+```
+
+
+Plot 2:
+```{r}
+ggplot(data2, aes(x=sim, color=scheme)) + geom_density(bw=0.22,lwd=1.5)+
+  labs(x=TeX('$X_h$'),y="Density",color="Distribution",title=TeX('$X_0=0.2$'))
+```
+
+```{r}
+names(longdata)<-c("sim","scheme","X_0")
+
+appender <- function(string) 
+    TeX(paste("$X_0 = $", string)) 
+
+
+ggplot(longdata, aes(x=sim, color=scheme)) + geom_density(bw=0.25,lwd=1.5)+
+  geom_vline(xintercept=median(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey",linetype=2)+
+  geom_vline(xintercept=min(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
+  geom_vline(xintercept=max(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
+  facet_wrap(~X_0,labeller = as_labeller(appender, 
+                            default = label_parsed) )+
+  theme_bw(base_size=16)+
+  theme(panel.grid.major = element_blank(), # remove the ugly lines
+        panel.grid.minor = element_blank())+
+  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
+        strip.text = element_text(face="bold"),
+        strip.background = element_rect(fill="grey")) + # facet strips
+  labs(x=TeX('$X_h$'),y="Density",color="Distribution")
+```
+

@@ -1,0 +1,82 @@
+---
+title: "likelihood, transition densities"
+author: "Johan Ravn Cornelius"
+date: "2026-05-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+
+library(numDeriv)
+```
+
+
+```{r}
+par0 <- c(0.05, 0.1, 1.5)
+#y <- par[1]
+#eps <- par[2]
+#sigma <- par[3]
+```
+
+
+```{r}
+F <- function(x,par){(x-x^3-par[1])/par[2]}
+DF <- function(x,par){(1-3*x^2)/par[2]}
+G <- function(x,par){par[3]}
+A <- function(c,par){DF(c,par)}
+btilde <- function(c,par){ c - F(c,par)/DF(c,par) }
+N <- function(x,c,par){(-x^3+3*c^2*x-2*c^3)/par[2]}
+muh <- function(x,h,c,par){exp(A(c,par)*h)*x+(1-exp(A(c,par)*h))*btilde(c,par)}
+Omegah <- function(h,c,par){  par[3]^2 * (exp(2*A(c,par)*h)-1)/(2*A(c,par))  }
+fh_fun <- function(x, h,c, par) {
+  ODEfun <- function(t, state, parms) {
+    u1 <- state[1]
+    du1 <- N(u1,c,par)
+    list(c(du1)) }
+  out <- deSolve::ode(y = x, times = c(0, h), func = ODEfun, parms = NULL, method = 'lsoda')
+  as.numeric(out[nrow(out), -1])
+}
+```
+
+```{r}
+M <- 100
+x0 <- 0.4
+h <- 0.1
+```
+
+Simulation:
+```{r}
+XS <- rep(x0,M)
+xi <- rnorm(M,0,sqrt(Omegah(h,x0,par0)))
+for(i in 1:M){
+  XS[i] <- fh_fun(muh(fh_fun(x0,h/2,x0,par0), h,x0,par0)+xi[i], h/2,x0,par0)
+}
+```
+
+Likelihood:
+```{r}
+density <- function(x,x_previous,h,c,par){
+  z <- fh_fun(x,-h/2,c,par) - muh( fh_fun(x_previous,h/2,c,par) , h,c,par)
+  D <- jacobian(function(xx) fh_fun(xx, -h/2, c, par), x)
+   -log( Omegah(h,c,par) )  - z^2/Omegah(h,c,par) + 2*log(abs(D   ))
+}
+likelihood <- function(data,h,par){
+  N <- length(data)
+  Xtk <- data[2:N]
+  Xtkm1 <- data[1:N-1]
+#  sum(density(Xtk,Xtkm1,h,Xtkm1,par))
+  terms <- rep(0,N-1)
+  for(i in 1:(N-1)){
+    terms[i] <- density(Xtk[i],Xtkm1[i],h,Xtkm1[i],par)
+  }
+  sum(terms)
+}
+likelihood(XS,h,par0)
+optim(par=c(0,0.5,1), fn=likelihood,data=XS,h=h,method="Nelder-Mead" )
+```
+

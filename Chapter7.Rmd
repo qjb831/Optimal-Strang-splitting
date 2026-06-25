@@ -20,14 +20,14 @@ sourceCpp("DoubleWell.cpp") # functions for Strang splitting and likelihood
 # Step 1: Definer 0=t_0<t_1<...<t_N=T og drift- og noise-funktioner
 ########################################################
 t_0 <- 0
-N <- 600000
+N <- 300000
 h <- 0.0001
 T <- N*h
 times <- seq(t_0,N*h,length.out=N+1)
 # noisy_times <- sort(times + rnorm(length(times), mean = 0, sd = 0.1))
 
 # drift term
-F <- function(x,theta = c(0.2, -0.05)){
+F <- function(x,theta = c(0.25, -0.05)){
   eps<-theta[1]; y<-theta[2]
   (x[1]-x[1]^3-y)/eps
 }
@@ -41,14 +41,14 @@ G <- function(x, Sigma = c(1.4)) Sigma
 ########################################################
 
 x0 <- c(0)
-n_paths <- 1000
+n_paths <- 500
 paths <- EM_sim_fast(F,G,x0,times,n_paths,progress = TRUE)
 
 # Plot første repetition
-#plot_variable_vs_time(paths[[1]],times,to_time = T)
+plot_variable_vs_time(paths[[1]],times,to_time = T)
 
 # Definer eventuelt sub paths
-ratio <- 800
+ratio <- 400
 sub_h <- h*ratio
 sub_times <- seq(t_0,N*h,length.out=N/ratio+1)
 idx <- seq(1,N+1,by=ratio)
@@ -62,262 +62,476 @@ sub_paths <- lapply(paths, function(path) {
   }
   df_sub
 })
-plot_variable_vs_time(sub_paths[[1]],sub_times,T)
-#write.csv(bind_rows(sub_paths, .id = "path_id"), "doublewell_paths.csv", row.names = FALSE)
-```
-
-
-```{r}
-
-compute_bias_per_transition <- function(x_old, par, left_b, right_b, const_term_in_N = FALSE){
-  
-  epsilon <- par[1]
-  y       <- par[2]
-  sigma   <- par[3]
-
-  uns_fix <- median(Re(polyroot(c(-y,1,0,-1))))
-
-
-  # full vectors (not split yet)
-  bias_left_full  <- abs(
-    (-6*left_b^3+3*y)*x_old^4 +
-    x_old^3*(-36*left_b^4-24*sigma^2*epsilon+36*left_b^2-8) +
-    x_old^2*(54*(left_b^3-y)*(left_b^2-1/3)) +
-    x_old*(-24*left_b^6+54*left_b^2*epsilon*sigma^2+36*left_b^3*y-12*sigma^2*epsilon-12*y^2) +
-    6*left_b^5-9*left_b^4*y+left_b^3*(-18*sigma^2*epsilon-4) +
-    6*left_b^2*y+12*epsilon*sigma^2*y
-  ) / (24*epsilon^3)
-
-  bias_right_full <- abs(
-    (-6*right_b^3+3*y)*x_old^4 +
-    x_old^3*(-36*right_b^4-24*sigma^2*epsilon+36*right_b^2-8) +
-    x_old^2*(54*(right_b^3-y)*(right_b^2-1/3)) +
-    x_old*(-24*right_b^6+54*right_b^2*epsilon*sigma^2+36*right_b^3*y-12*sigma^2*epsilon-12*y^2) +
-    6*right_b^5-9*right_b^4*y+right_b^3*(-18*sigma^2*epsilon-4) +
-    6*right_b^2*y+12*epsilon*sigma^2*y
-  ) / (24*epsilon^3)
-
-  use_right <- x_old > uns_fix
-
-  bias_i <- ifelse(use_right, bias_right_full, bias_left_full)
-
-  return(bias_i)
-}
-BiasR <- function(b,x,y,epsilon,sigma,well,const_term_in_N=FALSE){
-  uns_root <- median(Re(polyroot(c(-y,1,0,-1))))
-  if (well == 'left'){
-    x <- x[x<uns_root]
-  }else if (well == 'right'){
-    x <- x[x>=uns_root]
-  }
-  if (const_term_in_N == FALSE){
-    denom <- 1/(24*epsilon^3)
-    top <- (-6*b^3+3*y)*x^4 +
-      x^3*(-36*b^4-24*sigma^2*epsilon+36*b^2-8) +
-      x^2*(54*(b^3-y)*(b^2-1/3)) +
-      x*(-24*b^6+54*b^2*epsilon*sigma^2+36*b^3*y-12*sigma^2*epsilon-12*y^2) +
-      6*b^5-9*b^4*y+b^3*(-18*sigma^2*epsilon-4) +
-      6*b^2*y+12*epsilon*sigma^2*y
-    B <- abs(top*denom)
-  }else if (const_term_in_N ==TRUE){
-    c0 <- (3*x^2*y)/(8*epsilon^3) - x^3/(3*epsilon^3) - y/(12*epsilon^3) - sigma^2*x^3/epsilon^2 - sigma^2*x/(2*epsilon^2) + sigma^2*y/(8*epsilon^2)
-    c1 <- -x*y/(4*epsilon^3) + (3*x^2)/(8*epsilon^3) + 1/(12*epsilon^3) + x^4/(8*epsilon^3) + (3*sigma^2)/(8*epsilon^2)
-    c2 <- (9*sigma^2*x)/(4*epsilon^2) + (3*x^3)/(2*epsilon^3) + (3*y)/(8*epsilon^3) - x/(4*epsilon^3) - (9*x^2*y)/(8*epsilon^3)
-    c3 <- (3*x*y)/(4*epsilon^3) - (9*x^2)/(4*epsilon^3) - 3/(8*epsilon^3) - (9*sigma^2)/(8*epsilon^2) - (3*x^4)/(8*epsilon^3)
-    c4 <- -(3*x^3)/(2*epsilon^3) + (3*x)/(2*epsilon^3) - (3*y)/(8*epsilon^3)
-    c5 <- (27*x^2)/(8*epsilon^3) + 3/(8*epsilon^3)
-    c6 <- -(9*x)/(4*epsilon^3)
-    B <- mean((c0+c1*b+c2*b^2+c3*b^3+c4*b^4+c5*b^5+c6*b^6)^2)
-  }
-  return(B)
-}
-
+plot_variable_vs_time(sub_paths[[6]],sub_times,T)
 ```
 
 ```{r}
+fit_for_center <- function(method,
+                           sub_paths,
+                           sub_times,
+                           show_progress = FALSE) {
 
-methods <- c("fix","fix penalized")
-method_names <- c('Standard fixed point linearization',"fix penalized")
+  n_paths <- length(sub_paths)
 
-# True parameter vector (for overlay)
-true_params <- c(0.2, -0.05, 1.4)
-
-# Labels for parameters
-param_labels <- c("epsilon", "y", "sigma")
-n_paths <- length(paths)
-par0_list <- lapply(1:n_paths, function(x) c(0.3 + runif(1,-0.15,0.15) ,runif(1,-0.2,0.2),0.7+runif(1,-0.2,0.8)) )
-fit_for_center <- function(method, show_progress = FALSE) {
-  
   preds <- vector("list", n_paths)
+
   for (i in seq_along(sub_paths)) {
-    if (show_progress) message("  fitting path ", i, " / ", n_paths)
+
+    if (show_progress) {
+      message("fitting path ", i, " / ", n_paths)
+    }
+
     this_path <- sub_paths[[i]]
-    par0 <- par0_list[[i]]
+
+    par0 <- c(0.5, 0, 0.1)
 
     obj <- function(par, path, times) {
-      
-      if (par[1] < 0.001 || par[1] > 1) return(1e20)
-      if (par[2] < -0.37 || par[2] > 0.37) return(1e20)
-      if (par[3] < 0.001) return(1e20)
 
+      if (par[1] < 0.001 || par[1] > 1)
+        return(1e20)
 
-      fixed_points <- Re(polyroot(c(-par[2],1,0,-1)))
-      uns_fix <- median(fixed_points)
-      left_fix <- min(fixed_points)
-      right_fix <- max(fixed_points)
+      if (par[2] < -0.37 || par[2] > 0.37)
+        return(1e20)
+
+      if (par[3] < 0.001)
+        return(1e20)
+
+      roots <- polyroot(c(-par[2], 1, 0, -1))
+      real_roots <- Re(roots[abs(Im(roots)) < 1e-8])
+
+      if (length(real_roots) < 3)
+        return(1e20)
+
+      real_roots <- sort(real_roots)
+
+      left_fix  <- real_roots[1]
+      uns_fix   <- real_roots[2]
+      right_fix <- real_roots[3]
+
+      b_vec <- NULL
+
       if (method == "fix") {
-        b_vec <- c(left_fix, right_fix)
-        penalty <- 0
-      }
-      if (method == "fix penalized") {
-        b_vec <- c(left_fix, right_fix)
-        bias_i <- compute_bias_per_transition(path$X, par, left_fix, right_fix)
-        #bias_i <- bias_i/sum(bias_i)
-        penalty <- sum(log(1/(bias_i+1e-8)))    
-        #penalty <- sum(log1p(bias_i))
 
-      }else if (method == "negative fix") {
-        b_vec <- -c(left_fix, right_fix)/2
-      }
-      
-      else if (method == "zero") {
-        b_vec <- c(left_fix,0, right_fix)
-      }
-      else if (method == "uns") {
-        b_vec <- c(left_fix,uns_fix, right_fix)
-      }
-      else if (method == "theoretical bias (taylor)") {
-        left_b <- optimize(avg_absbias,c(-1.4,0),par[2],par[1],par[3],'left',FALSE)$minimum
-        right_b <- optimize(avg_absbias,c(0,1.4),par[2],par[1],par[3],'right',FALSE)$minimum
+        b_vec <- c(left_fix, right_fix)
 
-        b_vec <- c(left_b,right_b)
-      }
-      else if (method == "average N") {
-        b_vec <- c(optimize(avg_absN,c(-1.5,1.5),par[2],par[1],par[3],'both',FALSE)$minimum)
-      }
-      else if (method == "OU expectation b test") {
-        A <- (1-3*path$X^2)/par[1]
-        cond1 <- path$X < -1/sqrt(3)
-        cond2 <- path$X >1/sqrt(3)
-        b_vec <- ifelse(cond1,
-                        left_fix + (path$X-left_fix)*exp(A*sub_h),
-                        ifelse(cond2,
-                               right_fix + (path$X-right_fix)*exp(A*sub_h),
-                               oldX*exp(A*sub_h)))
-      }else if (method == "One-step expectation") {
-        
-        f_root <- function(b, x, x0) {
-          Fb <- (-b^3+b-par[2])/par[1]
-          DFb <- (1-3*b^2)/par[1]
-          b_tilde <- b - Fb/DFb
-          (x0 - b_tilde) * exp((1 - 3 * b_tilde^2) / par[1] * sub_h) + (b_tilde - x)
-        }
-        
-        b_vec <- mapply(
-          function(xi, x0i) {
-            f <- function(b) f_root(b, xi, x0i)
-            
-            fa <- f(-1.5)
-            fb <- f(1.5)
-            
-            if (fa * fb < 0) {
-              uniroot(f, c(-1.5, 1.5))$root
-            } else {
-              optimize(function(b) abs(f(b)), c(-1.5, 1.5))$minimum
-            }
-          },
-          path$X,
-          c(path$X[1], head(path$X, -1))
+      } else if (method == "all fix") {
+
+        b_vec <- c(left_fix, uns_fix, right_fix)
+
+      } else if (method == "left fix") {
+
+        b_vec <- c(left_fix)
+
+      } else if (method == "wrong fix") {
+
+        b_vec <- c(right_fix, left_fix)
+
+      } else if (method == "random") {
+        x_vals <- path[,1]
+        b_vec <- runif(1,min(x_vals),max(x_vals))
+
+      } else if (method == "average") {
+        x_vals <- path[,1]
+        b_vec <- mean(x_vals)
+
+      } else if (method == "pi") {
+        b_vec <- 3.14159
+
+      } else if (method == "zero") {
+        b_vec <- 0
+
+      } else if (method == "0.5") {
+        b_vec <- 0.5
+
+      } else if (method == "uns") {
+
+        b_vec <- uns_fix
+
+      } else if (method == "minimax steps") {
+
+        x_vals <- path[,1]
+        c_grid <- seq(-1.5, 1.5, length.out = 2001)
+
+        b_vec <- minimax_steps_cpp(
+          x_vals, c_grid,
+          par[1], par[2], par[3]
         )
+
+      } else if (method == "argminBargminV steps") {
+
+        x_vals <- path[,1]
+        c_grid <- seq(-1.5, 1.5, length.out = 2001)
+
+        b_vec <- argminBargminV_steps_cpp(
+          x_vals, c_grid,
+          par[1], par[2], par[3],
+          tol = 0.1
+        )
+
+      } else if (method == "argminVargminB steps") {
+
+        x_vals <- path[,1]
+        c_grid <- seq(-1.5, 1.5, length.out = 2001)
+
+        b_vec <- argminVargminB_steps_cpp(
+          x_vals, c_grid,
+          par[1], par[2], par[3],
+          tol = 0.1
+        )
+
+      } else if (method == "minimax wells 3") {
+
+        c_grid <- seq(-1.5, 1.5, length.out = 301)
+
+        b_vec <- wells_bvec_trap_cpp(
+          "minimax wells",
+          c_grid,
+          par[1], par[2], par[3],
+          split_mode = "thirds",
+          uns_fix
+        )
+
+      } else if (method == "argminVargminB wells 3") {
+
+        c_grid <- seq(-1.5, 1.5, length.out = 301)
+
+        b_vec <- wells_bvec_trap_cpp(
+          "argminVargminB wells",
+          c_grid,
+          par[1], par[2], par[3],
+          split_mode = "thirds",
+          uns_fix,
+          tol = 0.1
+        )
+
+      } else if (method == "argminBargminV wells 3") {
+
+        c_grid <- seq(-1.5, 1.5, length.out = 301)
+
+        b_vec <- wells_bvec_trap_cpp(
+          "argminBargminV wells",
+          c_grid,
+          par[1], par[2], par[3],
+          split_mode = "thirds",
+          uns_fix,
+          tol = 0.1
+        )
+
+      } else if (method == "local") {
+
+        b_vec <- path[,1]
       }
-      else if (method == "One-step expectation test") {
-        Fx <- (-path$X^3+path$X-par[2])/par[1]
-        DFx <- (1-3*path$X^2)/par[1]
-        D2Fx <- -6*path$X/par[1]
-        D3Fx <- -6/par[1]
-        b_vec <- path$X + sub_h*Fx + sub_h^2/2 * (DFx*Fx + 0.5*par[3]^2*D2Fx) + sub_h^3*(1/6*(D2Fx*Fx^2+DFx*Fx^2+par[3]^2*D3Fx*Fx) + 1/4*(par[3]^2*D2Fx*DFx))
-      }
-      
-      
-      
 
       res <- tryCatch(
-          log_lik_path_rcpp(as.matrix(path), times, par[1:2],par[3],
-                            method = method,b_vec,uns_fix),
-          error = function(e) NULL
-        )
+        log_lik_path_rcpp(
+          as.matrix(path),
+          times,
+          c(par[1], par[2]),
+          par[3],
+          method = method,
+          b_vec = b_vec,
+          uns_fix = uns_fix,
+          fh_solver = "rk4"
+        ),
+        error = function(e) NULL
+      )
 
-      if (is.null(res) || !is.finite(res$ll)) {
+      if (is.null(res) || !is.finite(res$ll))
         return(1e20)
-      }
-      lambda <- 0.02130493
-      #lambda <- 70000
-      if (method=='fix penalized') print(c(res$ll,lambda*penalty,res$ll + lambda*penalty))
-      return(res$ll + lambda*penalty)  
+
+      res$ll
     }
-    
-    fit <- optim(par    = par0,
-                 fn     = obj,
-                 path   = this_path,
-                 times  = sub_times,
-                 method = "Nelder-Mead",
-                 control = list(maxit = 5000, trace = 0)
+
+    fit <- tryCatch(
+      optim(
+        par = par0,
+        fn = obj,
+        path = this_path,
+        times = sub_times,
+        method = "Nelder-Mead",
+        control = list(
+          maxit = 5000,
+          trace = 0
+        )
+      ),
+      error = function(e) NULL
     )
 
-    preds[[i]] <- fit$par
-    
+    preds[[i]] <-
+      if (is.null(fit) || !is.finite(fit$value))
+        rep(NA_real_, length(param_labels))
+      else
+        fit$par
   }
-  
-  # Convert results to data.frame
+
   preds_mat <- do.call(rbind, preds)
   colnames(preds_mat) <- param_labels
-  out_df <- as.data.frame(preds_mat)
-  return(out_df)
+
+  as.data.frame(preds_mat)
 }
-
-# ---------------------- run fits for all centers -----------------------
-all_results_list <- vector("list", length(methods))
-
-for (i in seq_along(methods)) {
-  mname <- method_names[i]
-  meth  <- methods[[i]]
-  message("Running fits for center: ", mname)
-  
-  res_df <- fit_for_center(meth, show_progress = TRUE)
-  
-  # add run index and center label
-  res_df <- res_df %>% 
-    mutate(run = seq_len(nrow(res_df)), 
-           method = mname)
-  
-  all_results_list[[i]] <- res_df
-}
-
-# Combine results and remove rows where all parameters are NA
-all_results <- bind_rows(all_results_list)
-all_results <- all_results %>% 
-  filter(!apply(select(., all_of(param_labels)), 1, function(r) all(is.na(r))))
-
-est_df <- all_results %>%
-  pivot_longer(cols = all_of(param_labels),
-               names_to = "param",
-               values_to = "estimate") %>%
-  mutate(param = factor(param, levels = param_labels),
-         method = factor(method, levels = method_names))
-
-# ---------------------- use your new plotting function -----------------------
-p <- plot_estimates(
-  est_df       = est_df,
-  true_params  = true_params,
-  param_labels = param_labels,
-  method_names = method_names,
-  title_text   = "Parameter Estimates Across Methods",
-  subtitle     = "SDE estimation comparison"
-)
-
-print(p)
 ```
 
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tibble)
+
+run_experiment <- function(
+    paths,
+    ratios,
+    methods,
+    method_names,
+    fit_fun,
+    t_0,
+    N,
+    h
+) {
+
+  all_estimates <- data.frame()
+
+  for (ratio in ratios) {
+
+    message("Ratio = ", ratio)
+
+    sub_times <- seq(
+      t_0,
+      N * h,
+      length.out = N / ratio + 1
+    )
+
+    idx <- seq(1, N + 1, by = ratio)
+
+    sub_paths <- lapply(paths, function(path) {
+
+      df <- as.data.frame(path)
+      valid_idx <- idx[idx <= nrow(df)]
+      df[valid_idx, , drop = FALSE]
+    })
+
+    for (k in seq_along(methods)) {
+
+      message("  Method: ", method_names[k])
+
+      est <- fit_fun(
+        method = methods[k],
+        sub_paths = sub_paths,
+        sub_times = sub_times
+      )
+
+      tmp <- est
+      tmp$path <- seq_len(nrow(tmp))
+      tmp$ratio <- ratio
+      tmp$sub_h <- h * ratio
+      tmp$method <- method_names[k]
+
+      all_estimates <- rbind(all_estimates, tmp)
+    }
+  }
+
+  all_estimates
+}
+make_long_estimates <- function(all_estimates, true_params, param_labels) {
+
+  est_long <- pivot_longer(
+    all_estimates,
+    cols = c(epsilon, y, sigma),
+    names_to = "parameter",
+    values_to = "estimate"
+  )
+
+  truth_df <- data.frame(
+    parameter = param_labels,
+    truth = true_params
+  )
+
+  est_long <- left_join(est_long, truth_df, by = "parameter")
+
+  est_long$parameter <- factor(
+    est_long$parameter,
+    levels = param_labels
+  )
+
+  est_long
+}
+compute_metric_df <- function(est_long, metric = c("MSE", "ARE")) {
+
+  metric <- match.arg(metric)
+
+  est_long %>%
+    mutate(
+      value = if (metric == "MSE") {
+        (estimate - truth)^2
+      } else {
+        abs(estimate - truth) / abs(truth)
+      }
+    ) %>%
+    group_by(ratio, sub_h, method, parameter) %>%
+    summarise(
+      value = mean(value, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+plot_metric <- function(est_long,
+                        metric = c("MSE", "ARE"),
+                        methods_keep = NULL) {
+
+  metric <- match.arg(metric)
+
+  metric_df <- compute_metric_df(est_long, metric)
+
+  if (!is.null(methods_keep)) {
+    metric_df <- metric_df %>%
+      filter(method %in% methods_keep)
+  }
+
+  ggplot(metric_df,
+         aes(x = sub_h, y = value, color = method)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    facet_wrap(~ parameter, scales = "free_y") +
+    labs(
+      x = "h",
+      y = metric,
+      color = "Method"
+    ) +
+    theme_minimal()
+}
+plot_raw_estimates <- function(est_df,
+                               true_params,
+                               param_labels,
+                               ratio_value = NULL,
+                               method_names,
+                               title_text = NULL,
+                               normalize = FALSE,
+                               cap_outliers = FALSE,
+                               methods_keep = NULL) {
+
+  
+
+  if (!is.null(ratio_value)) {
+    est_df <- est_df %>%
+      filter(ratio == ratio_value)
+  }
+
+  if (!is.null(methods_keep)) {
+    est_df <- est_df %>%
+      filter(method %in% methods_keep)
+  }
+
+  true_df <- tibble(
+    parameter = param_labels,
+    true_value = true_params
+  )
+
+  est_df <- est_df %>%
+    mutate(
+      method = factor(method, levels = method_names),
+      parameter = factor(parameter, levels = param_labels)
+    ) %>%
+    left_join(true_df, by = "parameter") %>%
+    mutate(plot_value = estimate)
 
 
+  # optional trimming of outliers
+  if (cap_outliers) {
+    est_df <- est_df %>%
+      group_by(parameter, method) %>%
+      filter(
+        plot_value >= quantile(plot_value, 0.01, na.rm = TRUE),
+        plot_value <= quantile(plot_value, 0.99, na.rm = TRUE)
+      ) %>%
+      ungroup()
+  }
+
+  truth_lines <- tibble(
+    parameter = param_labels,
+    true_value = true_params
+  )
+
+  p <- ggplot(
+    est_df,
+    aes(x = method, y = plot_value, fill = method)
+  ) +
+    geom_boxplot(outlier.size = 0.3) +
+    scale_fill_brewer(palette = "Set2")
+
+  p <- p +
+    geom_hline(
+      data = truth_lines,
+      aes(yintercept = true_value, linetype = "True parameter"),
+      color = "gold",
+      linewidth = 0.9,
+      inherit.aes = FALSE
+    ) +
+    scale_linetype_manual(
+      name = "",
+      values = c("True parameter" = "dashed")
+    )
+
+  p <- p +
+    facet_wrap(
+      ~ parameter,
+      scales = "free_y",
+      ncol = 3
+    ) +
+    labs(
+      title = title_text,
+      x = "Method",
+      y = if (normalize) "(Estimate - True) / True" else "Estimate"
+    ) +
+    theme_bw(base_size = 14, base_family = "Times") +
+    theme(
+      axis.text.x = element_text(angle = 25, hjust = 1, size = 12),
+      strip.text = element_text(size = 14),
+      legend.position = "right"
+    )
+
+  return(p)
+}
+```
+
+```{r}
+all_estimates <- run_experiment(
+  paths = paths,
+  ratios = c(400,600,800,1000),
+  methods = c("random","local","average","pi","zero","0.5","uns","wrong fix","fix","all fix","argminVargminB steps","argminBargminV steps","minimax steps","argminVargminB wells 3","argminBargminV wells 3","minimax wells 3"),
+  method_names = c("random","local","average","pi","zero","0.5","uns","wrong fix","fix","all fix","argminVargminB steps","argminBargminV steps","minimax steps","argminVargminB wells 3","argminBargminV wells 3","minimax wells 3"),
+  fit_fun = fit_for_center,
+  t_0 = t_0,
+  N = N,
+  h = h
+)
+
+est_long <- make_long_estimates(
+  all_estimates,
+  true_params,
+  param_labels
+)
+```
+
+```{r}
+plot_metric(
+  est_long,
+  metric = "ARE",
+  methods_keep = c('wrong fix',"all fix","minimax steps","minimax wells 3")
+)
+plot_raw_estimates(
+  est_long,
+  true_params,
+  cap_outliers = TRUE,
+  param_labels,
+  ratio_value = 1000,
+  method_names = c("random","local","average","pi","zero","0.5","uns","wrong fix","fix","all fix","argminVargminB steps","argminBargminV steps","minimax steps","argminVargminB wells 3","argminBargminV wells 3","minimax wells 3"),
+  methods_keep = c("random","all fix","minimax wells 3")
+)
+```
+
+```{r}
+write.csv(
+  est_long,
+  file = "DW_big_experiment.csv",
+  row.names = FALSE
+)
+experiement <- read.csv("DW_experiment_0.05_0.1.csv")
+```
 

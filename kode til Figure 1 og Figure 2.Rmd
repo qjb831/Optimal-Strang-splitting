@@ -1,0 +1,330 @@
+---
+title: "facet distributions"
+author: "Johan Ravn Cornelius"
+date: "2026-05-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source('Brownian_motion.R',keep.source = TRUE)
+source('EM.R',keep.source = TRUE)
+library(ggplot2)
+library(latex2exp)
+library(cowplot)
+library(tidyverse)
+library(extrafont)
+```
+
+Double-well potential model, including choice of parameters:
+```{r}
+y <- -0.05
+eps <- 0.1
+sigma <- 1.5
+
+F <- function(x){(x-x^3-y)/eps}
+DF <- function(x){(1-3*x^2)/eps}
+G <- function(x){sigma}
+```
+
+Splitting scheme functions:
+```{r}
+A <- function(c){DF(c)}
+btilde <- function(c){ c - F(c)/DF(c) }
+N <- function(x,c){(-x^3+3*c^2*x-2*c^3)/eps}
+muh <- function(x,h,c){exp(A(c)*h)*x+(1-exp(A(c)*h))*btilde(c)}
+Omegah <- function(h,c){  sigma^2 * (exp(2*A(c)*h)-1)/(2*A(c))  }
+fh_fun <- function(x, h,c) {
+  ODEfun <- function(t, state, parms) {
+    u1 <- state[1]
+    du1 <- N(u1,c)
+    list(c(du1)) }
+  out <- deSolve::ode(y = x, times = c(0, h), func = ODEfun, parms = NULL, method = 'lsoda')
+  as.numeric(out[nrow(out), -1])
+}
+```
+
+Number of simulations:
+```{r}
+M <- 5000
+```
+
+Choice of transition density:
+```{r}
+x0 <- -1
+x0_left <- x0
+h <- 0.08
+```
+
+Simulating EM steps (independent of chosen splitting):
+```{r}
+hEM <- h/2000
+EMtimes <- seq(0,h,by=hEM)
+EMsim <- rep(NA,M)
+for(i in 1:M){
+  EMsteps <-  EM_sim_fast(F,G,x0,EMtimes,n_paths=1,progress = FALSE)[[1]]
+  EMsim[i] <- EMsteps[nrow(EMsteps),1]
+}
+EMdata <- data.frame(EMsim)
+EMdata$scheme <- "True distribution (EM)"
+EMdata$x0 <- x0
+names(EMdata) <- c("sim", "scheme", "Initial value")
+```
+
+Finding a c that minimizes bias function:
+```{r}
+B <- function(b,x,y,eps,sigma){
+  denom <- 1/(24*eps^3)
+  top <- (-6*b^3+3*y)*x^4 +
+    x^3*(-36*b^4-24*sigma^2*eps+36*b^2-8) +
+    x^2*(54*(b^3-y)*(b^2-1/3)) +
+    x*(-24*b^6+54*b^2*eps*sigma^2+36*b^3*y-12*sigma^2*eps-12*y^2) +
+    6*b^5-9*b^4*y+b^3*(-18*sigma^2*eps-4) +
+    6*b^2*y+12*eps*sigma^2*y
+  return(top*denom)
+}
+get_roots <- function(y){
+  r <- polyroot(c(-y, 1, 0, -1))  # -x^3 + x - y = 0
+  r <- Re(r[abs(Im(r)) < 1e-8])  # keep real roots
+  sort(r)
+}
+inv <- function(x,y,sigma,eps){exp(2*(0.5*x^2-0.25*x^4-y*x)/(sigma^2*eps))}
+avg_absbias_A1 <- function(b,y,eps,sigma){
+  uns_root <- median(get_roots(y))
+  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
+  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , -Inf,uns_root,y,sigma,eps)$value
+  integrand <- function(x){
+    abs(B(b,x,y,eps,sigma) ) * inv(x,y,sigma,eps) / Z
+  }
+  abs(integrate(integrand, -Inf, uns_root)$value*p_inv)
+}
+avg_absbias_A3 <- function(b,y,eps,sigma){
+  uns_root <- median(get_roots(y))
+  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
+  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , uns_root,Inf,y,sigma,eps)$value
+  integrand <- function(x){
+    abs(B(b,x,y,eps,sigma) )* inv(x,y,sigma,eps) / Z
+  }
+  abs(integrate(integrand, uns_root, Inf)$value*p_inv)
+}
+
+c_A1 <- optimize(f=avg_absbias_A1,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
+c_A3 <- optimize(f=avg_absbias_A3,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
+```
+
+```{r}
+StrangSim <- function(x0,h,c,M){
+  X0 <- rep(x0,M)
+  xi <- rnorm(M,0,sqrt(Omegah(h,c)))
+  step1 <- mapply(fh_fun,X0,h/2,c)
+  step2 <- mapply(muh,step1,h,c)+xi
+  step3 <- mapply(fh_fun,step2,h/2,c)
+  return(step3)
+}
+```
+
+Negative stable fixed point:
+```{r}
+StrangDataFix <- data.frame(StrangSim(x0,h, min(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataFix$scheme <- "Fixed point"
+StrangDataFix$x0 <- x0
+names(StrangDataFix) <- c("sim","scheme", "Initial value")
+```
+
+Minimal mean bias when x<uns:
+```{r}
+StrangDataMin <- data.frame(StrangSim(x0,h, c2  ,M))
+StrangDataMin$scheme <- "Minimal mean bias"
+StrangDataMin$x0 <- x0
+names(StrangDataMin) <- c("sim","scheme", "Initial value")
+```
+
+... and minimal bias in just this one step:
+```{r}
+local_bias <- function(b,y,eps,sigma){ abs(B(b,x0,y,eps,sigma)) }
+c_local <-  optimize(f=local_bias, y=y,eps=eps,sigma=sigma, interval=c(-2,2) )$minimum
+StrangDataLocalMin <- data.frame(StrangSim(x0,h, c_local ,M))
+StrangDataLocalMin$scheme <- "Minimal local bias"
+StrangDataLocalMin$x0 <- x0
+names(StrangDataLocalMin) <- c("sim","scheme", "Initial value")
+```
+
+
+Opposite fixed point:
+```{r}
+StrangDataOpp <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataOpp$scheme <- "Opposite fixed point"
+StrangDataOpp$x0 <- x0
+names(StrangDataOpp) <- c("sim","scheme","Initial value")
+```
+
+```{r}
+StrangDataEachPoint <- data.frame(StrangSim(x0,h, x0  ,M))
+StrangDataEachPoint$scheme <- "Local Strang"
+StrangDataEachPoint$x0 <- x0
+names(StrangDataEachPoint) <- c("sim","scheme","Initial value")
+```
+
+Unstable fixed point:
+```{r}
+StrangDataUns <- data.frame(StrangSim(x0,h, median(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataUns$scheme <- "Unstable fixed point"
+StrangDataUns$x0 <- x0
+names(StrangDataUns) <- c("sim","scheme","Initial value")
+```
+
+
+Data when x<uns:
+```{r}
+data <- rbind(EMdata, StrangDataFix
+              #,StrangDataMin
+              ,StrangDataOpp
+               , StrangDataEachPoint
+              #, StrangDataLocalMin
+           #  , StrangDataUns
+              )
+```
+
+
+Plot:
+```{r eval=FALSE, include=FALSE}
+colors <- c("Fixed point"="red",
+            "Minimal mean bias"="green3", 
+            "Opposite fixed point"="blue",
+            "EM"="black")
+ggplot(data, aes(x=sim, color=scheme)) + geom_density(bw=0.17,lwd=1.5)+ geom_vline(xintercept=median(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey",linetype=2)+
+  geom_vline(xintercept=min(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
+  geom_vline(xintercept=max(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
+  geom_vline(xintercept=-x0)+
+  labs(x=TeX('$X_h$'),y="Density",color="Distribution",title=TeX('$X_0=-0.5$'))+
+    theme_bw(base_size=16)+
+  theme(panel.grid.major = element_blank(), # remove the ugly lines
+        panel.grid.minor = element_blank())+
+  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
+        strip.text = element_text(face="bold"),
+        strip.background = element_rect(fill="grey")) # facet strips
+```
+
+
+
+Adding x0>uns to the data:
+
+
+```{r}
+x0 <- 0.6
+EMsim2 <- rep(NA,M)
+for(i in 1:M){
+  EMsteps2 <-  EM_sim_fast(F,G,x0,EMtimes,n_paths=1,progress = FALSE)[[1]]
+  EMsim2[i] <- EMsteps2[nrow(EMsteps2),1]
+}
+EMdata2 <- data.frame(EMsim2)
+EMdata2$scheme <- "True distribution (EM)"
+EMdata2$x0 <- x0
+names(EMdata2) <- c("sim", "scheme", "Initial value")
+StrangDataFix2 <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataFix2$scheme <- "Fixed point"
+StrangDataFix2$x0 <- x0
+names(StrangDataFix2) <- c("sim","scheme", "Initial value")
+StrangDataMinPos2 <- data.frame(StrangSim(x0,h, c2max  ,M))
+StrangDataMinPos2$scheme <- "Minimal mean bias"
+StrangDataMinPos2$x0 <- x0
+names(StrangDataMinPos2) <- c("sim","scheme","Initial value")
+StrangDataOpp2 <- data.frame(StrangSim(x0,h, min(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataOpp2$scheme <- "Opposite fixed point"
+StrangDataOpp2$x0 <- x0
+names(StrangDataOpp2) <- c("sim","scheme","Initial value")
+StrangDataEachPoint2 <- data.frame(StrangSim(x0,h, x0  ,M))
+StrangDataEachPoint2$scheme <- "Local Strang"
+StrangDataEachPoint2$x0 <- x0
+names(StrangDataEachPoint2) <- c("sim","scheme","Initial value")
+local_bias_2 <- function(b,y,eps,sigma){ abs(B(b,x0,y,eps,sigma)) }
+c_local_2 <-  optimize(f=local_bias_2, y=y,eps=eps,sigma=sigma, interval=c(-2,2) )$minimum
+StrangDataLocalMin2 <- data.frame(StrangSim(x0,h, c_local ,M))
+StrangDataLocalMin2$scheme <- "Minimal local bias"
+StrangDataLocalMin2$x0 <- x0
+names(StrangDataLocalMin2) <- c("sim","scheme", "Initial value")
+StrangDataUns2 <- data.frame(StrangSim(x0,h, median(Re(polyroot(c(-y,1,0,-1))))  ,M))
+StrangDataUns2$scheme <- "Unstable fixed point"
+StrangDataUns2$x0 <- x0
+names(StrangDataUns2) <- c("sim","scheme","Initial value")
+```
+
+
+
+```{r}
+data2 <- rbind(EMdata2,StrangDataFix2,
+               # StrangDataMinPos2,
+               StrangDataOpp2
+               ,StrangDataEachPoint2
+               #, StrangDataLocalMin2
+              # ,StrangDataUns2
+               )
+longdata <- rbind(data, data2)
+```
+
+
+Plot 2:
+```{r eval=FALSE, include=FALSE}
+ggplot(data2, aes(x=sim, color=scheme)) + geom_density(bw=0.22,lwd=1.5)+
+  labs(x=TeX('$X_h$'),y="Density",color="Distribution",title=TeX('$X_0=0.2$'))
+```
+
+```{r}
+names(longdata)<-c("sim","scheme","X_0")
+longdata$scheme <- factor(longdata$scheme,levels=c('True distribution (EM)', 'Fixed point', 'Opposite fixed point', 'Minimal mean bias', 'Minimal local bias', 'Local Strang', 'Unstable fixed point'))
+
+appender <- function(string) 
+    TeX(paste("$X_0 = $", string)) 
+
+break_func <- function(x){if (mean(x)<0){
+  c(x0_left,  -1,   0,1)
+}else {
+    c(-1, 0, x0, 1)
+  }
+}
+label_func <- function(x){if (mean(x)<0){
+  c(TeX('$x_0$'),  -1,  0,1)
+}else {
+    c(-1, 0, TeX('$x_0$'), 1)
+  }
+}
+
+p <- ggplot(longdata, aes(x=sim,color=scheme)) + geom_density(bw=0.15,lwd=1.5,key_glyph='path')+
+  geom_vline(xintercept=median(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey",linetype=2)+
+  geom_vline(xintercept=min(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
+  geom_vline(xintercept=max(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
+  geom_vline(data=filter(longdata,X_0==x0_left),aes(xintercept=x0_left))+
+  geom_vline(data=filter(longdata,X_0==x0),aes(xintercept=x0))+
+  scale_x_continuous(breaks=break_func,labels=label_func)+
+  facet_wrap(~X_0,scales='free_x',labeller = as_labeller(appender, 
+                            default = label_parsed) )+
+  scale_color_manual(values=c("gold", "red", "blue","green4"#, "magenta"
+                              # ,"purple","brown" 
+                              )
+                     )+
+#  coord_cartesian(xlim=c(-1.2,1.2),ylim=c(0,2))+
+  theme_bw(base_size=20   #, base_family = "Times New Roman"
+           )+
+  theme(axis.text.x=element_text(size=18) )+
+  theme(panel.grid.major = element_blank(), # remove the ugly lines
+        panel.grid.minor = element_blank())+
+  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
+        strip.text = element_text(face="bold"),
+        strip.background = element_rect(fill="grey")) + # facet strips
+  labs(x=TeX('$X_h$'),y="Density",color="Distribution")
+
+
+p
+#ggsave(plot = p, width = 13, height = 6, dpi = 300, filename = "par fra Ex1, x0 -1,3 and 0,6 , h 0,08 , 5k x 2k version 2.pdf")
+
+```
+
+
+

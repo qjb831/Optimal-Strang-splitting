@@ -1,4 +1,14 @@
 ---
+title: "density markdown without  mean bias"
+output: html_document
+date: "2026-07-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
 title: "facet distributions"
 author: "Johan Ravn Cornelius"
 date: "2026-05-19"
@@ -19,11 +29,119 @@ library(tidyverse)
 library(extrafont)
 ```
 
+##Figure 1
+
+Sample paths:
+```{r}
+eps1 <- 0.1
+eps2 <- 0.25
+y1 <- -0.05
+y2 <- 0
+sigma1 <- 1.7
+sigma2 <- 1.2
+F1 <- function(x){(x-x^3-y1)/eps1}
+F2 <- function(x){(x-x^3-y2)/eps2}
+G1 <- function(x){sigma1}
+G2 <- function(x){sigma2}
+
+x0 <- c(0)
+n_paths <- 1
+h <- 0.0001
+T <- 30
+m <- T/h +1
+times <- seq(0,T,by=h)
+
+W_increments <- rnorm(m,0,sqrt(h))
+W_increments[1]<-0
+
+EM <-  function(F,G){
+  X_e <- rep(x0,m)
+  for(i in (2:m)){
+    X_e[i] <- X_e[i-1] + F(X_e[i-1])*h + G(X_e[i-1])*W_increments[i] } 
+  return(X_e)
+}
+path1 <- EM(F1,G1)
+path2 <- EM(F2,G2)
+
+data1<- data.frame(matrix(nrow=length(path1),ncol=2))
+names(data1) <- c("X", "t")
+data1$X <- path1
+data1$t <- times
+data1$sigma <- sigma1
+data1$y <- as.character(1)
+
+data2<- data.frame(matrix(nrow=length(path1),ncol=2))
+names(data2) <- c("X", "t")
+data2$X <- path2
+data2$t <- times
+data2$sigma <- sigma2
+data2$y <- as.character(2)
+
+data <- rbind(data1, data2)
+
+my_labeller <- as_labeller(c(`1`="theta[1]", `2`="theta[2]"),  default = label_parsed)
+
+samplepath_p <- ggplot(data,aes(x=t,y=X))+
+  geom_line(lwd=0.15)+
+  facet_wrap(~y,ncol=1, labeller = my_labeller)+
+  scale_y_continuous(minor_breaks = seq(-2, 1.5, 0.5))+
+  labs(x="t", y=TeX('$X_t$'))+
+  theme_bw(base_size=16)+
+  theme(panel.grid.major = element_blank(), 
+       panel.grid.minor = element_blank())+
+  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
+        strip.text = element_text(face="bold"),
+        strip.background = element_rect(fill="grey")  ) 
+samplepath_p
+```
+
+Drift functions:
+```{r}
+xs <- seq(-1.5,1.5,by=0.001)
+U1 <- function(x){(0.25*x^4 - 0.5* x^2 + x*y1)/eps1}
+U2 <- function(x){(0.25*x^4 - 0.5* x^2 + x*y2)/eps2}
+U1s <- U1(xs)
+U2s <- U2(xs)
+data1 <- data.frame(cbind(xs,U1s))
+names(data1) <- c("x","Ux")
+data1$theta <- as.character(1)
+data2 <- data.frame(cbind(xs,U2s))
+names(data2) <- c("x","Ux")
+data2$theta <- as.character(2)
+data <- rbind(data1,data2)
+my_labeller <- as_labeller(c(`1`="theta[1]", `2`="theta[2]"),
+                           default = label_parsed)
+potential_p <-  ggplot(data=data,aes(x=x,y=Ux))+
+  geom_line(lwd=0.9)+
+  facet_wrap(~theta,ncol=1,
+             scales="free_y",
+             labeller=my_labeller
+             )+
+  geom_vline(xintercept=-1/sqrt(3),linetype=2)+
+  geom_vline(xintercept=1/sqrt(3),linetype=2)+
+  theme_bw(base_size=16  )+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())+
+  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
+        strip.text = element_text(face="bold"),
+        strip.background = element_rect(fill="grey"))+
+  labs(x="x",y="U(x)")
+potential_p
+```
+
+
+
+##Figure 2
+
 Double-well potential model, including choice of parameters:
 ```{r}
 y <- -0.05
 eps <- 0.1
-sigma <- 1.5
+sigma <- 1.7
 
 F <- function(x){(x-x^3-y)/eps}
 DF <- function(x){(1-3*x^2)/eps}
@@ -54,7 +172,7 @@ M <- 5000
 
 Choice of transition density:
 ```{r}
-x0 <- -1
+x0 <- -1.3
 x0_left <- x0
 h <- 0.08
 ```
@@ -74,46 +192,6 @@ EMdata$x0 <- x0
 names(EMdata) <- c("sim", "scheme", "Initial value")
 ```
 
-Finding a c that minimizes bias function:
-```{r}
-B <- function(b,x,y,eps,sigma){
-  denom <- 1/(24*eps^3)
-  top <- (-6*b^3+3*y)*x^4 +
-    x^3*(-36*b^4-24*sigma^2*eps+36*b^2-8) +
-    x^2*(54*(b^3-y)*(b^2-1/3)) +
-    x*(-24*b^6+54*b^2*eps*sigma^2+36*b^3*y-12*sigma^2*eps-12*y^2) +
-    6*b^5-9*b^4*y+b^3*(-18*sigma^2*eps-4) +
-    6*b^2*y+12*eps*sigma^2*y
-  return(top*denom)
-}
-get_roots <- function(y){
-  r <- polyroot(c(-y, 1, 0, -1))  # -x^3 + x - y = 0
-  r <- Re(r[abs(Im(r)) < 1e-8])  # keep real roots
-  sort(r)
-}
-inv <- function(x,y,sigma,eps){exp(2*(0.5*x^2-0.25*x^4-y*x)/(sigma^2*eps))}
-avg_absbias_A1 <- function(b,y,eps,sigma){
-  uns_root <- median(get_roots(y))
-  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
-  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , -Inf,uns_root,y,sigma,eps)$value
-  integrand <- function(x){
-    abs(B(b,x,y,eps,sigma) ) * inv(x,y,sigma,eps) / Z
-  }
-  abs(integrate(integrand, -Inf, uns_root)$value*p_inv)
-}
-avg_absbias_A3 <- function(b,y,eps,sigma){
-  uns_root <- median(get_roots(y))
-  Z <- integrate(inv,-Inf,Inf,y=y,sigma=sigma,eps=eps)$value
-  p_inv <- 1/integrate(function(x,y,sigma,eps) {inv(x,y,sigma,eps) / Z} , uns_root,Inf,y,sigma,eps)$value
-  integrand <- function(x){
-    abs(B(b,x,y,eps,sigma) )* inv(x,y,sigma,eps) / Z
-  }
-  abs(integrate(integrand, uns_root, Inf)$value*p_inv)
-}
-
-c_A1 <- optimize(f=avg_absbias_A1,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
-c_A3 <- optimize(f=avg_absbias_A3,y=y,eps=eps,sigma=sigma,interval=c(-2,2))$minimum
-```
 
 ```{r}
 StrangSim <- function(x0,h,c,M){
@@ -134,25 +212,6 @@ StrangDataFix$x0 <- x0
 names(StrangDataFix) <- c("sim","scheme", "Initial value")
 ```
 
-Minimal mean bias when x<uns:
-```{r}
-StrangDataMin <- data.frame(StrangSim(x0,h, c2  ,M))
-StrangDataMin$scheme <- "Minimal mean bias"
-StrangDataMin$x0 <- x0
-names(StrangDataMin) <- c("sim","scheme", "Initial value")
-```
-
-... and minimal bias in just this one step:
-```{r}
-local_bias <- function(b,y,eps,sigma){ abs(B(b,x0,y,eps,sigma)) }
-c_local <-  optimize(f=local_bias, y=y,eps=eps,sigma=sigma, interval=c(-2,2) )$minimum
-StrangDataLocalMin <- data.frame(StrangSim(x0,h, c_local ,M))
-StrangDataLocalMin$scheme <- "Minimal local bias"
-StrangDataLocalMin$x0 <- x0
-names(StrangDataLocalMin) <- c("sim","scheme", "Initial value")
-```
-
-
 Opposite fixed point:
 ```{r}
 StrangDataOpp <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M))
@@ -161,6 +220,7 @@ StrangDataOpp$x0 <- x0
 names(StrangDataOpp) <- c("sim","scheme","Initial value")
 ```
 
+Local:
 ```{r}
 StrangDataEachPoint <- data.frame(StrangSim(x0,h, x0  ,M))
 StrangDataEachPoint$scheme <- "Local Strang"
@@ -168,53 +228,12 @@ StrangDataEachPoint$x0 <- x0
 names(StrangDataEachPoint) <- c("sim","scheme","Initial value")
 ```
 
-Unstable fixed point:
+Data when x in A1:
 ```{r}
-StrangDataUns <- data.frame(StrangSim(x0,h, median(Re(polyroot(c(-y,1,0,-1))))  ,M))
-StrangDataUns$scheme <- "Unstable fixed point"
-StrangDataUns$x0 <- x0
-names(StrangDataUns) <- c("sim","scheme","Initial value")
+data <- rbind(EMdata, StrangDataFix, StrangDataOpp, StrangDataEachPoint)
 ```
 
-
-Data when x<uns:
-```{r}
-data <- rbind(EMdata, StrangDataFix
-              #,StrangDataMin
-              ,StrangDataOpp
-               , StrangDataEachPoint
-              #, StrangDataLocalMin
-           #  , StrangDataUns
-              )
-```
-
-
-Plot:
-```{r eval=FALSE, include=FALSE}
-colors <- c("Fixed point"="red",
-            "Minimal mean bias"="green3", 
-            "Opposite fixed point"="blue",
-            "EM"="black")
-ggplot(data, aes(x=sim, color=scheme)) + geom_density(bw=0.17,lwd=1.5)+ geom_vline(xintercept=median(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey",linetype=2)+
-  geom_vline(xintercept=min(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
-  geom_vline(xintercept=max(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
-  geom_vline(xintercept=-x0)+
-  labs(x=TeX('$X_h$'),y="Density",color="Distribution",title=TeX('$X_0=-0.5$'))+
-    theme_bw(base_size=16)+
-  theme(panel.grid.major = element_blank(), # remove the ugly lines
-        panel.grid.minor = element_blank())+
-  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
-  theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
-        strip.text.y = element_text(size = 16, color = "black", face = "bold"),
-        strip.text = element_text(face="bold"),
-        strip.background = element_rect(fill="grey")) # facet strips
-```
-
-
-
-Adding x0>uns to the data:
-
-
+Adding x0 in A3 to the data:
 ```{r}
 x0 <- 0.6
 EMsim2 <- rep(NA,M)
@@ -230,10 +249,6 @@ StrangDataFix2 <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M
 StrangDataFix2$scheme <- "Fixed point"
 StrangDataFix2$x0 <- x0
 names(StrangDataFix2) <- c("sim","scheme", "Initial value")
-StrangDataMinPos2 <- data.frame(StrangSim(x0,h, c2max  ,M))
-StrangDataMinPos2$scheme <- "Minimal mean bias"
-StrangDataMinPos2$x0 <- x0
-names(StrangDataMinPos2) <- c("sim","scheme","Initial value")
 StrangDataOpp2 <- data.frame(StrangSim(x0,h, min(Re(polyroot(c(-y,1,0,-1))))  ,M))
 StrangDataOpp2$scheme <- "Opposite fixed point"
 StrangDataOpp2$x0 <- x0
@@ -242,89 +257,58 @@ StrangDataEachPoint2 <- data.frame(StrangSim(x0,h, x0  ,M))
 StrangDataEachPoint2$scheme <- "Local Strang"
 StrangDataEachPoint2$x0 <- x0
 names(StrangDataEachPoint2) <- c("sim","scheme","Initial value")
-local_bias_2 <- function(b,y,eps,sigma){ abs(B(b,x0,y,eps,sigma)) }
-c_local_2 <-  optimize(f=local_bias_2, y=y,eps=eps,sigma=sigma, interval=c(-2,2) )$minimum
-StrangDataLocalMin2 <- data.frame(StrangSim(x0,h, c_local ,M))
-StrangDataLocalMin2$scheme <- "Minimal local bias"
-StrangDataLocalMin2$x0 <- x0
-names(StrangDataLocalMin2) <- c("sim","scheme", "Initial value")
-StrangDataUns2 <- data.frame(StrangSim(x0,h, median(Re(polyroot(c(-y,1,0,-1))))  ,M))
-StrangDataUns2$scheme <- "Unstable fixed point"
-StrangDataUns2$x0 <- x0
-names(StrangDataUns2) <- c("sim","scheme","Initial value")
-```
-
-
-
-```{r}
-data2 <- rbind(EMdata2,StrangDataFix2,
-               # StrangDataMinPos2,
-               StrangDataOpp2
-               ,StrangDataEachPoint2
-               #, StrangDataLocalMin2
-              # ,StrangDataUns2
-               )
-longdata <- rbind(data, data2)
-```
-
-
-Plot 2:
-```{r eval=FALSE, include=FALSE}
-ggplot(data2, aes(x=sim, color=scheme)) + geom_density(bw=0.22,lwd=1.5)+
-  labs(x=TeX('$X_h$'),y="Density",color="Distribution",title=TeX('$X_0=0.2$'))
 ```
 
 ```{r}
-names(longdata)<-c("sim","scheme","X_0")
-longdata$scheme <- factor(longdata$scheme,levels=c('True distribution (EM)', 'Fixed point', 'Opposite fixed point', 'Minimal mean bias', 'Minimal local bias', 'Local Strang', 'Unstable fixed point'))
+data2 <- rbind(EMdata2,StrangDataFix2, StrangDataOpp2,StrangDataEachPoint2)
+data <- rbind(data, data2)
+```
+
+
+```{r}
+names(data)<-c("sim","scheme","X_0")
+data$scheme <- factor(data$scheme,levels=c('True distribution (EM)', 'Fixed point', 'Opposite fixed point','Local Strang'))
 
 appender <- function(string) 
-    TeX(paste("$X_0 = $", string)) 
+    TeX(paste("$x_0 = $", string)) 
 
 break_func <- function(x){if (mean(x)<0){
-  c(x0_left,  -1,   0,1)
+  c(x0_left,  -1, 0,1)
 }else {
     c(-1, 0, x0, 1)
   }
 }
 label_func <- function(x){if (mean(x)<0){
-  c(TeX('$x_0$'),  -1,  0,1)
+  c(TeX('$x_0$'),  -1,0,1)
 }else {
     c(-1, 0, TeX('$x_0$'), 1)
   }
 }
 
-p <- ggplot(longdata, aes(x=sim,color=scheme)) + geom_density(bw=0.15,lwd=1.5,key_glyph='path')+
+p <- ggplot(data, aes(x=sim,color=scheme)) + geom_density(bw=0.15,lwd=1.5,key_glyph='path')+
   geom_vline(xintercept=median(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey",linetype=2)+
   geom_vline(xintercept=min(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
   geom_vline(xintercept=max(Re(polyroot(c(-y,1,0,-1)))),col="darkgrey")+
-  geom_vline(data=filter(longdata,X_0==x0_left),aes(xintercept=x0_left))+
-  geom_vline(data=filter(longdata,X_0==x0),aes(xintercept=x0))+
+  geom_vline(data=filter(data,X_0==x0_left),aes(xintercept=x0_left))+
+  geom_vline(data=filter(data,X_0==x0),aes(xintercept=x0))+
+  facet_wrap(~X_0,scales='free_x',labeller = as_labeller(appender, default = label_parsed) )+
+  scale_color_manual(values=c("gold", "red", "blue","green4" )  )+
+  guides(color=guide_legend(ncol=2))+
   scale_x_continuous(breaks=break_func,labels=label_func)+
-  facet_wrap(~X_0,scales='free_x',labeller = as_labeller(appender, 
-                            default = label_parsed) )+
-  scale_color_manual(values=c("gold", "red", "blue","green4"#, "magenta"
-                              # ,"purple","brown" 
-                              )
-                     )+
-#  coord_cartesian(xlim=c(-1.2,1.2),ylim=c(0,2))+
-  theme_bw(base_size=20   #, base_family = "Times New Roman"
-           )+
+  theme_bw(base_size=18 )+
   theme(axis.text.x=element_text(size=18) )+
-  theme(panel.grid.major = element_blank(), # remove the ugly lines
+  theme(panel.grid.major = element_blank(),
         panel.grid.minor = element_blank())+
-  theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
+  theme(legend.position="bottom",#legend.key.size= unit(1.2, "cm"),
+        legend.spacing.y=unit(0.02, "cm"),
+        legend.box.spacing = unit(0.01, "cm"))+
   theme(strip.text.x = element_text(size = 16, color = "black", face = "bold"),
         strip.text.y = element_text(size = 16, color = "black", face = "bold"),
         strip.text = element_text(face="bold"),
-        strip.background = element_rect(fill="grey")) + # facet strips
+        strip.background = element_rect(fill="grey")) +
   labs(x=TeX('$X_h$'),y="Density",color="Distribution")
 
-
 p
-#ggsave(plot = p, width = 13, height = 6, dpi = 300, filename = "par fra Ex1, x0 -1,3 and 0,6 , h 0,08 , 5k x 2k version 2.pdf")
-
+#ggsave(plot = p, width = 8, height = 4, dpi = 300, filename = "new densities_plot_5k_x_2k.pdf")
 ```
-
-
 

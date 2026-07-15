@@ -67,15 +67,13 @@ data1<- data.frame(matrix(nrow=length(path1),ncol=2))
 names(data1) <- c("X", "t")
 data1$X <- path1
 data1$t <- times
-data1$sigma <- sigma1
-data1$y <- as.character(1)
+data1$param <- as.character(1)
 
 data2<- data.frame(matrix(nrow=length(path1),ncol=2))
 names(data2) <- c("X", "t")
 data2$X <- path2
 data2$t <- times
-data2$sigma <- sigma2
-data2$y <- as.character(2)
+data2$param <- as.character(2)
 
 data <- rbind(data1, data2)
 
@@ -83,10 +81,10 @@ my_labeller <- as_labeller(c(`1`="theta[1]", `2`="theta[2]"),  default = label_p
 
 samplepath_p <- ggplot(data,aes(x=t,y=X))+
   geom_line(lwd=0.15)+
-  facet_wrap(~y,ncol=1, labeller = my_labeller)+
+  facet_wrap(~param,ncol=1, labeller = my_labeller)+
   scale_y_continuous(minor_breaks = seq(-2, 1.5, 0.5))+
   labs(x="t", y=TeX('$X_t$'))+
-  theme_bw(base_size=16)+
+  theme_bw(base_size=20)+
   theme(panel.grid.major = element_blank(), 
        panel.grid.minor = element_blank())+
   theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
@@ -121,7 +119,7 @@ potential_p <-  ggplot(data=data,aes(x=x,y=Ux))+
              )+
   geom_vline(xintercept=-1/sqrt(3),linetype=2)+
   geom_vline(xintercept=1/sqrt(3),linetype=2)+
-  theme_bw(base_size=16  )+
+  theme_bw(base_size=20  )+
   theme(panel.grid.major = element_blank(), 
         panel.grid.minor = element_blank())+
   theme(legend.position="right",legend.key.size= unit(1.2, "cm"),)+
@@ -137,19 +135,25 @@ potential_p
 
 ##Figure 2
 
-Double-well potential model, including choice of parameters:
 ```{r}
+
+#Number of simulations:
+M <- 2000
+#Parameters:
 y <- -0.05
 eps <- 0.1
 sigma <- 1.7
+#Choice of transition density:
+x0 <- -1.3
+x0_left <- x0
+h <- 0.08
 
+
+
+#Splitting scheme functions:
 F <- function(x){(x-x^3-y)/eps}
-DF <- function(x){(1-3*x^2)/eps}
 G <- function(x){sigma}
-```
-
-Splitting scheme functions:
-```{r}
+DF <- function(x){(1-3*x^2)/eps}
 A <- function(c){DF(c)}
 btilde <- function(c){ c - F(c)/DF(c) }
 N <- function(x,c){(-x^3+3*c^2*x-2*c^3)/eps}
@@ -163,22 +167,8 @@ fh_fun <- function(x, h,c) {
   out <- deSolve::ode(y = x, times = c(0, h), func = ODEfun, parms = NULL, method = 'lsoda')
   as.numeric(out[nrow(out), -1])
 }
-```
 
-Number of simulations:
-```{r}
-M <- 5000
-```
-
-Choice of transition density:
-```{r}
-x0 <- -1.3
-x0_left <- x0
-h <- 0.08
-```
-
-Simulating EM steps (independent of chosen splitting):
-```{r}
+#Simulating EM steps:
 hEM <- h/2000
 EMtimes <- seq(0,h,by=hEM)
 EMsim <- rep(NA,M)
@@ -190,10 +180,8 @@ EMdata <- data.frame(EMsim)
 EMdata$scheme <- "True distribution (EM)"
 EMdata$x0 <- x0
 names(EMdata) <- c("sim", "scheme", "Initial value")
-```
 
-
-```{r}
+#Function for simulating one-step predictions:
 StrangSim <- function(x0,h,c,M){
   X0 <- rep(x0,M)
   xi <- rnorm(M,0,sqrt(Omegah(h,c)))
@@ -202,39 +190,29 @@ StrangSim <- function(x0,h,c,M){
   step3 <- mapply(fh_fun,step2,h/2,c)
   return(step3)
 }
-```
 
-Negative stable fixed point:
-```{r}
+#Splitting around negative stable fixed point:
 StrangDataFix <- data.frame(StrangSim(x0,h, min(Re(polyroot(c(-y,1,0,-1))))  ,M))
 StrangDataFix$scheme <- "Fixed point"
 StrangDataFix$x0 <- x0
 names(StrangDataFix) <- c("sim","scheme", "Initial value")
-```
 
-Opposite fixed point:
-```{r}
+#Splitting around opposite stable fixed point:
 StrangDataOpp <- data.frame(StrangSim(x0,h, max(Re(polyroot(c(-y,1,0,-1))))  ,M))
 StrangDataOpp$scheme <- "Opposite fixed point"
 StrangDataOpp$x0 <- x0
 names(StrangDataOpp) <- c("sim","scheme","Initial value")
-```
 
-Local:
-```{r}
+#Local splitting around x0:
 StrangDataEachPoint <- data.frame(StrangSim(x0,h, x0  ,M))
 StrangDataEachPoint$scheme <- "Local Strang"
 StrangDataEachPoint$x0 <- x0
 names(StrangDataEachPoint) <- c("sim","scheme","Initial value")
-```
 
-Data when x in A1:
-```{r}
+#Combine data for x0 in A1
 data <- rbind(EMdata, StrangDataFix, StrangDataOpp, StrangDataEachPoint)
-```
 
-Adding x0 in A3 to the data:
-```{r}
+#Repeat for x0 in A3
 x0 <- 0.6
 EMsim2 <- rep(NA,M)
 for(i in 1:M){
@@ -257,18 +235,14 @@ StrangDataEachPoint2 <- data.frame(StrangSim(x0,h, x0  ,M))
 StrangDataEachPoint2$scheme <- "Local Strang"
 StrangDataEachPoint2$x0 <- x0
 names(StrangDataEachPoint2) <- c("sim","scheme","Initial value")
-```
 
-```{r}
 data2 <- rbind(EMdata2,StrangDataFix2, StrangDataOpp2,StrangDataEachPoint2)
 data <- rbind(data, data2)
-```
-
-
-```{r}
 names(data)<-c("sim","scheme","X_0")
 data$scheme <- factor(data$scheme,levels=c('True distribution (EM)', 'Fixed point', 'Opposite fixed point','Local Strang'))
 
+
+#Plot
 appender <- function(string) 
     TeX(paste("$x_0 = $", string)) 
 
@@ -278,7 +252,7 @@ break_func <- function(x){if (mean(x)<0){
     c(-1, 0, x0, 1)
   }
 }
-label_func <- function(x){if (mean(x)<0){
+label_func <- function(x){if (x[1]==-1.3){
   c(TeX('$x_0$'),  -1,0,1)
 }else {
     c(-1, 0, TeX('$x_0$'), 1)
@@ -309,6 +283,5 @@ p <- ggplot(data, aes(x=sim,color=scheme)) + geom_density(bw=0.15,lwd=1.5,key_gl
   labs(x=TeX('$X_h$'),y="Density",color="Distribution")
 
 p
-#ggsave(plot = p, width = 8, height = 4, dpi = 300, filename = "new densities_plot_5k_x_2k.pdf")
 ```
 
